@@ -9,7 +9,9 @@
 //    JNI_OnLoad()                  — JVM-driven entry (System.loadLibrary and
 //                                    manual test calls): attach the thread,
 //                                    parse mappings.json, populate the JNI
-//                                    reflection cache. Returns JNI_VERSION_1_8
+//                                    reflection cache, then install the hook
+//                                    engine (glXSwapBuffers detour + bare
+//                                    ImGui context). Returns JNI_VERSION_1_8
 //                                    or JNI_ERR.
 //    JNI_OnUnload()                — release all cached global refs.
 //    __attribute__((destructor))   — idempotent JNI shutdown + logger detach.
@@ -32,6 +34,8 @@
 
 #include "core/filesystem.hpp"
 #include "core/logger.hpp"
+#include "hook/hook_engine.hpp"
+#include "hook/present_hook.hpp"
 #include "jni/mappings.hpp"
 #include "jni/reflection_cache.hpp"
 
@@ -135,6 +139,15 @@ bool jni_startup(JavaVM* vm) {
               stats.methods_ok, stats.methods_missing,
               stats.fields_ok, stats.fields_missing, stats.elapsed_ms);
 
+    // ---- 4) hook engine: glXSwapBuffers detour + bare ImGui context ---------
+    if (woke::hook::present_startup()) {
+        WOKE_INFO("hook", "hook engine initialized: %s active, ImGui %s",
+                  woke::hook::present_target_name(),
+                  woke::hook::imgui_initialized() ? "ready" : "missing");
+    } else {
+        WOKE_WARN("hook", "present hook unavailable (no glXSwapBuffers) — continuing without overlay");
+    }
+
     g_state.store(kReady, std::memory_order_release);
     return true;
 }
@@ -156,6 +169,12 @@ void jni_shutdown() {
         cache.clear();
     }
 
+    // Hooks were installed by the same startup path — tear them down here.
+    // Engine first (restores the original prologue), then the ImGui context,
+    // so no detour can fire into a destroyed context.
+    woke::hook::engine_shutdown();
+    woke::hook::present_shutdown();
+
     g_vm = nullptr;
     g_state.store(kDetached, std::memory_order_release);
     WOKE_INFO("jni", "JNI shutdown complete — reflection cache released "
@@ -163,10 +182,13 @@ void jni_shutdown() {
               g_mappings.class_count());
 }
 
-// JNI_OnLoad only fires for System.loadLibrary; an injected .so must find an
-// already-running JVM itself. No JVM here is perfectly normal (standalone
-// tests) — JNI_OnLoad will initialize instead.
-void try_auto_attach() {
+// Detect-only probe for the injection case (JNI_OnLoad never fires for an
+// injected .so). CRITICAL: this must NOT run JVM classloading — FindClass
+// inside a dlopen constructor deadlocks against glibc's loader lock (the
+// classloader may need to dlopen while our constructor holds the lock).
+// All heavy initialization therefore happens in JNI_OnLoad; a deferred-init
+// worker thread for pure-injection setups lands in a later phase.
+void probe_jvm_for_deferred_init() {
     using get_created_vms = jint(JNICALL*)(JavaVM**, jsize, jsize*);
     auto get_vms = reinterpret_cast<get_created_vms>(
         ::dlsym(RTLD_DEFAULT, "JNI_GetCreatedJavaVMs"));
@@ -180,10 +202,8 @@ void try_auto_attach() {
         WOKE_INFO("jni", "JVM not created yet — deferred to JNI_OnLoad");
         return;
     }
-    WOKE_INFO("jni", "running JVM found — initializing from load constructor");
-    if (!jni_startup(vms[0])) {
-        WOKE_ERROR("jni", "constructor auto-attach failed (JNI_OnLoad may retry)");
-    }
+    WOKE_INFO("jni", "JVM present — deferring initialization to JNI_OnLoad "
+                     "(no JVM work in the load constructor)");
 }
 
 } // namespace
@@ -211,7 +231,7 @@ __attribute__((constructor)) static void woke_on_load() {
     WOKE_INFO("core", "session log attached: %s", session_path);
     WOKE_INFO("core", "logger initialized — core bootstrap complete");
 
-    try_auto_attach();
+    probe_jvm_for_deferred_init();
 }
 
 // ----------------------------------------------------------------------------
@@ -312,6 +332,35 @@ WOKE_API void* woke_reflection_field(const char* yarn_class, const char* field,
     const std::string desc = (descriptor != nullptr) ? descriptor : std::string{};
     return static_cast<void*>(woke::jni::reflection_cache::instance().find_field(
         yarn_class, field, (descriptor != nullptr) ? &desc : nullptr));
+}
+
+// ---- hook engine / present-hook introspection ------------------------------
+WOKE_API int woke_hook_status() {
+    return woke::hook::present_installed() ? 1 : 0;
+}
+WOKE_API int woke_hook_imgui_initialized() {
+    return woke::hook::imgui_initialized() ? 1 : 0;
+}
+WOKE_API const char* woke_hook_target() {
+    return woke::hook::present_target_name();
+}
+WOKE_API long long woke_hook_present_count() {
+    return woke::hook::present_hit_count();
+}
+WOKE_API long long woke_hook_suppressed_count() {
+    return woke::hook::present_suppressed_count();
+}
+WOKE_API long long woke_hook_imgui_frame_count() {
+    return woke::hook::present_imgui_frame_count();
+}
+WOKE_API long long woke_hook_last_frame_ns() {
+    return woke::hook::present_last_frame_ns();
+}
+WOKE_API long long woke_hook_total_frame_ns() {
+    return woke::hook::present_total_frame_ns();
+}
+WOKE_API void woke_hook_set_gui_open(int open) {
+    woke::hook::set_gui_open(open != 0);
 }
 
 } // extern "C"

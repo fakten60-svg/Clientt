@@ -1,0 +1,194 @@
+// ============================================================================
+//  woke.wtf — src/hook/present_hook.cpp
+//  The glXSwapBuffers detour, bare ImGui frame, and overhead measurement.
+//
+//  No GL is touched by OUR code: the ImGui backend (imgui_impl_opengl3) is
+//  attached later inside the game; here NewFrame/Render run on pure CPU so
+//  the hook is testable headlessly. The detour always chains to the original
+//  via the MinHook trampoline.
+// ============================================================================
+#include "hook/present_hook.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <dlfcn.h>
+
+#include <imgui.h>
+
+#include "core/logger.hpp"
+#include "hook/hook_engine.hpp"
+
+namespace woke::hook {
+
+namespace {
+
+// ABI of glXSwapBuffers(Display*, GLXDrawable) without an X11 dependency:
+// opaque display pointer + XID (unsigned long on LP64).
+using swap_buffers_fn = void (*)(void*, unsigned long);
+
+std::atomic<bool> g_installed{false};
+std::atomic<bool> g_gui_open{false};
+std::atomic<long long> g_hits{0};
+std::atomic<long long> g_suppressed{0};
+std::atomic<long long> g_imgui_frames{0};
+std::atomic<long long> g_last_ns{0};
+std::atomic<long long> g_total_ns{0};
+
+ImGuiContext* g_imgui = nullptr;
+void* g_original = nullptr;                       // MinHook trampoline
+void* g_libgl_handle = nullptr;                   // kept while hooked
+std::chrono::steady_clock::time_point g_last_frame{};
+
+// ---- the detour ------------------------------------------------------------
+void swap_buffers_detour(void* dpy, unsigned long drawable) {
+    using clock = std::chrono::steady_clock;
+    const clock::time_point t0 = clock::now();
+
+    g_hits.fetch_add(1, std::memory_order_relaxed);
+
+    if (g_gui_open.load(std::memory_order_relaxed) && g_imgui != nullptr) {
+        ImGuiIO& io = ImGui::GetIO();
+        const clock::time_point now = clock::now();
+        float dt = std::chrono::duration<float>(now - g_last_frame).count();
+        g_last_frame = now;
+        if (dt < 0.001f || dt > 0.1f) {
+            dt = 1.0f / 60.0f;                   // clamp first/odd frames
+        }
+        io.DeltaTime = dt;
+
+        ImGui::NewFrame();
+        // Bare frame: windows/sidebar are built here in a later phase.
+        ImGui::Render();
+        g_imgui_frames.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        // Draw-call suppression: GUI closed -> zero ImGui work.
+        g_suppressed.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const long long ns =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(clock::now() - t0).count();
+    g_last_ns.store(ns, std::memory_order_relaxed);
+    g_total_ns.fetch_add(ns, std::memory_order_relaxed);
+
+    // Always chain — the game must keep presenting.
+    reinterpret_cast<swap_buffers_fn>(g_original)(dpy, drawable);
+}
+
+void* resolve_swap_buffers() {
+    void* fn = ::dlsym(RTLD_DEFAULT, "glXSwapBuffers");
+    if (fn != nullptr) {
+        return fn;
+    }
+    // Not in the link map yet — pull libGL in if the system has one.
+    if (g_libgl_handle == nullptr) {
+        g_libgl_handle = ::dlopen("libGL.so.1", RTLD_LAZY);
+    }
+    if (g_libgl_handle != nullptr) {
+        return ::dlsym(g_libgl_handle, "glXSwapBuffers");
+    }
+    return nullptr;
+}
+
+} // namespace
+
+bool present_startup() {
+    if (g_installed.load(std::memory_order_acquire)) {
+        return true;
+    }
+
+    // ---- 1) bare ImGui context (pure CPU, no backend) ----------------------
+    if (g_imgui == nullptr) {
+        IMGUI_CHECKVERSION();
+        g_imgui = ImGui::CreateContext();
+        if (g_imgui == nullptr) {
+            WOKE_ERROR("hook", "ImGui::CreateContext failed");
+            return false;
+        }
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;                            // no imgui.ini side effects
+        io.DisplaySize = ImVec2(1920.0f, 1080.0f);           // placeholder until backend attaches
+        io.DeltaTime = 1.0f / 60.0f;
+        unsigned char* pixels = nullptr;
+        int w = 0;
+        int h = 0;
+        io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);       // build atlas headlessly
+        io.Fonts->TexID = (ImTextureID)1;                    // placeholder until GL upload
+        WOKE_INFO("hook", "ImGui context created (bare frame, no GL backend yet; atlas %dx%d)",
+                  w, h);
+    }
+
+    // ---- 2) resolve + install the present detour ---------------------------
+    void* target = resolve_swap_buffers();
+    if (target == nullptr) {
+        WOKE_WARN("hook", "glXSwapBuffers not found in this process — present hook skipped");
+        return false;
+    }
+    if (!create_and_enable(target, reinterpret_cast<void*>(&swap_buffers_detour),
+                           &g_original, "glXSwapBuffers")) {
+        return false;
+    }
+
+    g_hits.store(0);
+    g_suppressed.store(0);
+    g_imgui_frames.store(0);
+    g_last_ns.store(0);
+    g_total_ns.store(0);
+    g_installed.store(true, std::memory_order_release);
+    WOKE_INFO("hook", "present hook installed: glXSwapBuffers @ %p (trampoline %p)",
+              target, g_original);
+    return true;
+}
+
+void present_shutdown() {
+    const bool was_installed = g_installed.exchange(false, std::memory_order_acq_rel);
+    g_original = nullptr;
+    g_gui_open.store(false, std::memory_order_relaxed);
+    if (g_imgui != nullptr) {
+        ImGui::DestroyContext(g_imgui);
+        g_imgui = nullptr;
+        WOKE_INFO("hook", "ImGui context destroyed");
+    }
+    if (was_installed) {
+        WOKE_INFO("hook", "present hook state released (detour removed by engine shutdown)");
+    }
+    // g_libgl_handle intentionally kept: dlclose'ing libGL while its code may
+    // still be mapped into the game is never safe.
+}
+
+bool present_installed() {
+    return g_installed.load(std::memory_order_acquire);
+}
+
+bool imgui_initialized() {
+    return g_imgui != nullptr;
+}
+
+const char* present_target_name() {
+    return "glXSwapBuffers";
+}
+
+void set_gui_open(bool open) {
+    g_gui_open.store(open, std::memory_order_relaxed);
+}
+
+bool gui_open() {
+    return g_gui_open.load(std::memory_order_relaxed);
+}
+
+long long present_hit_count() {
+    return g_hits.load(std::memory_order_relaxed);
+}
+long long present_suppressed_count() {
+    return g_suppressed.load(std::memory_order_relaxed);
+}
+long long present_imgui_frame_count() {
+    return g_imgui_frames.load(std::memory_order_relaxed);
+}
+long long present_last_frame_ns() {
+    return g_last_ns.load(std::memory_order_relaxed);
+}
+long long present_total_frame_ns() {
+    return g_total_ns.load(std::memory_order_relaxed);
+}
+
+} // namespace woke::hook
