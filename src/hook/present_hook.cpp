@@ -16,7 +16,10 @@
 #include <imgui.h>
 
 #include "core/logger.hpp"
+#include "game/game_state.hpp"
+#include "gui/gui.hpp"
 #include "hook/hook_engine.hpp"
+#include "modules/module.hpp"
 
 namespace woke::hook {
 
@@ -27,7 +30,7 @@ namespace {
 using swap_buffers_fn = void (*)(void*, unsigned long);
 
 std::atomic<bool> g_installed{false};
-std::atomic<bool> g_gui_open{false};
+// GUI open state lives in woke::gui (single source of truth).
 std::atomic<long long> g_hits{0};
 std::atomic<long long> g_suppressed{0};
 std::atomic<long long> g_imgui_frames{0};
@@ -46,7 +49,12 @@ void swap_buffers_detour(void* dpy, unsigned long drawable) {
 
     g_hits.fetch_add(1, std::memory_order_relaxed);
 
-    if (g_gui_open.load(std::memory_order_relaxed) && g_imgui != nullptr) {
+    // Client-state work (not draw calls): keybind edge-detection + module
+    // ticks run regardless of GUI visibility.
+    gui::poll_keybind(dpy);
+    modules::module_registry::instance().tick_all(game::game_state::instance());
+
+    if (gui::is_open() && g_imgui != nullptr) {
         ImGuiIO& io = ImGui::GetIO();
         const clock::time_point now = clock::now();
         float dt = std::chrono::duration<float>(now - g_last_frame).count();
@@ -57,7 +65,7 @@ void swap_buffers_detour(void* dpy, unsigned long drawable) {
         io.DeltaTime = dt;
 
         ImGui::NewFrame();
-        // Bare frame: windows/sidebar are built here in a later phase.
+        gui::draw();                          // click-gui window + module list
         ImGui::Render();
         g_imgui_frames.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -142,7 +150,7 @@ bool present_startup() {
 void present_shutdown() {
     const bool was_installed = g_installed.exchange(false, std::memory_order_acq_rel);
     g_original = nullptr;
-    g_gui_open.store(false, std::memory_order_relaxed);
+    gui::set_open(false);
     if (g_imgui != nullptr) {
         ImGui::DestroyContext(g_imgui);
         g_imgui = nullptr;
@@ -168,11 +176,11 @@ const char* present_target_name() {
 }
 
 void set_gui_open(bool open) {
-    g_gui_open.store(open, std::memory_order_relaxed);
+    gui::set_open(open);   // delegated: gui owns the open state
 }
 
 bool gui_open() {
-    return g_gui_open.load(std::memory_order_relaxed);
+    return gui::is_open();
 }
 
 long long present_hit_count() {
