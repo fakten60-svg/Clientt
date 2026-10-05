@@ -102,6 +102,9 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_310.java",
         "tests/fixtures/src/net/minecraft/class_437.java",
         "tests/fixtures/src/net/minecraft/class_746.java",
+        "tests/fixtures/src/net/minecraft/class_1297.java",
+        "tests/fixtures/src/net/minecraft/class_315.java",
+        "tests/fixtures/src/net/minecraft/class_7172.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {

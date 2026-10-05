@@ -32,12 +32,17 @@
 
 #include <jni.h>
 
+#include "core/config.hpp"
 #include "core/filesystem.hpp"
 #include "core/logger.hpp"
+#include "game/game_state.hpp"
+#include "gui/gui.hpp"
 #include "hook/hook_engine.hpp"
 #include "hook/present_hook.hpp"
 #include "jni/mappings.hpp"
 #include "jni/reflection_cache.hpp"
+#include "modules/builtin.hpp"
+#include "modules/module.hpp"
 
 #ifndef WOKE_VERSION
 #define WOKE_VERSION "0.1.0-dev"
@@ -139,7 +144,12 @@ bool jni_startup(JavaVM* vm) {
               stats.methods_ok, stats.methods_missing,
               stats.fields_ok, stats.fields_missing, stats.elapsed_ms);
 
-    // ---- 4) hook engine: glXSwapBuffers detour + bare ImGui context ---------
+    // ---- 4) modules + config (client-state framework) ----------------------
+    woke::game::game_state::instance().set_vm(vm);
+    woke::modules::register_builtins();
+    woke::config::load();   // applies saved module states + keybind
+
+    // ---- 5) hook engine: glXSwapBuffers detour + ImGui context --------------
     if (woke::hook::present_startup()) {
         WOKE_INFO("hook", "hook engine initialized: %s active, ImGui %s",
                   woke::hook::present_target_name(),
@@ -158,6 +168,17 @@ void jni_shutdown() {
     if (g_state.load(std::memory_order_acquire) == kDetached) {
         return;
     }
+
+    // Modules first: on_disable() callbacks (e.g. Fullbright's gamma restore)
+    // still need the reflection cache and an attached env. Module state
+    // changes at shutdown are NOT persisted — the config file keeps the
+    // user's states for the next attach.
+    auto& registry = woke::modules::module_registry::instance();
+    for (woke::modules::module* m : registry.all()) {
+        m->set_enabled(false);
+    }
+    registry.clear();
+    woke::game::game_state::instance().set_vm(nullptr);
 
     auto& cache = woke::jni::reflection_cache::instance();
     JNIEnv* env = nullptr;
@@ -361,6 +382,114 @@ WOKE_API long long woke_hook_total_frame_ns() {
 }
 WOKE_API void woke_hook_set_gui_open(int open) {
     woke::hook::set_gui_open(open != 0);
+}
+
+// ---- module registry -------------------------------------------------------
+WOKE_API int woke_module_count() {
+    return static_cast<int>(woke::modules::module_registry::instance().all().size());
+}
+
+WOKE_API const char* woke_module_name(int index) {
+    const auto all = woke::modules::module_registry::instance().all();
+    return (index >= 0 && index < static_cast<int>(all.size())) ? all[static_cast<std::size_t>(index)]->name().c_str()
+                                                               : nullptr;
+}
+
+WOKE_API const char* woke_module_category(int index) {
+    const auto all = woke::modules::module_registry::instance().all();
+    return (index >= 0 && index < static_cast<int>(all.size()))
+               ? all[static_cast<std::size_t>(index)]->category().c_str()
+               : nullptr;
+}
+
+WOKE_API int woke_module_enabled(const char* name) {
+    if (name == nullptr) {
+        return -1;
+    }
+    const woke::modules::module* m = woke::modules::module_registry::instance().find(name);
+    return (m != nullptr) ? (m->enabled() ? 1 : 0) : -1;
+}
+
+// Toggles a module and persists the config immediately. 1 = ok, 0 = unknown.
+WOKE_API int woke_module_set_enabled(const char* name, int enabled) {
+    if (name == nullptr) {
+        return 0;
+    }
+    if (!woke::modules::module_registry::instance().set_enabled(name, enabled != 0)) {
+        return 0;
+    }
+    woke::config::save();
+    return 1;
+}
+
+WOKE_API void woke_modules_tick() {
+    woke::modules::module_registry::instance().tick_all(woke::game::game_state::instance());
+}
+
+// ---- client-state access ---------------------------------------------------
+WOKE_API int woke_game_client_ready() {
+    return woke::game::game_state::instance().client_ready() ? 1 : 0;
+}
+WOKE_API int woke_game_current_fps() {
+    return woke::game::game_state::instance().current_fps();
+}
+WOKE_API double woke_game_gamma() {
+    return woke::game::game_state::instance().gamma();
+}
+WOKE_API int woke_game_set_gamma(double gamma) {
+    return woke::game::game_state::instance().set_gamma(gamma) ? 1 : 0;
+}
+WOKE_API int woke_game_is_sprinting() {
+    return woke::game::game_state::instance().is_sprinting() ? 1 : 0;
+}
+WOKE_API int woke_game_set_sprinting(int on) {
+    return woke::game::game_state::instance().set_sprinting(on != 0) ? 1 : 0;
+}
+
+// ---- click-gui -------------------------------------------------------------
+WOKE_API int woke_gui_is_open() {
+    return woke::gui::is_open() ? 1 : 0;
+}
+WOKE_API void woke_gui_set_open(int open) {
+    woke::gui::set_open(open != 0);
+}
+WOKE_API void woke_gui_toggle() {
+    woke::gui::toggle();
+}
+// Headless frame cycle (NewFrame -> draw -> Render). Returns 1 on success;
+// *modules_shown / *toggles may be null.
+WOKE_API int woke_gui_draw_frame(int* modules_shown, int* toggles) {
+    if (!woke::hook::imgui_initialized()) {
+        return 0;   // no ImGui context — nothing to draw
+    }
+    const woke::gui::draw_stats st = woke::gui::render_frame();
+    if (modules_shown != nullptr) {
+        *modules_shown = st.modules_shown;
+    }
+    if (toggles != nullptr) {
+        *toggles = st.toggles;
+    }
+    return 1;
+}
+WOKE_API long long woke_gui_draw_count() {
+    return woke::gui::draw_count();
+}
+
+// ---- config ----------------------------------------------------------------
+WOKE_API const char* woke_config_path() {
+    return woke::config::path();
+}
+WOKE_API int woke_config_load() {
+    return woke::config::load() ? 1 : 0;
+}
+WOKE_API int woke_config_save() {
+    return woke::config::save() ? 1 : 0;
+}
+WOKE_API int woke_config_keybind() {
+    return woke::config::keybind();
+}
+WOKE_API void woke_config_set_keybind(int keycode) {
+    woke::config::set_keybind(keycode);
 }
 
 } // extern "C"
