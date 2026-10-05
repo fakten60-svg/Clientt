@@ -1,0 +1,27 @@
+# woke.wtf — Linux x86_64 / C++ .gitignore
+
+# Build outputs
+/build/
+/bin/
+/cmake-build-*/
+
+# Bootstrap & tooling cache (cloned refs, downloaded jars/toolchains)
+/.cache/
+
+# Compiled artifacts (any location)
+*.so
+*.o
+*.a
+*.d
+*.part.*
+
+# Generated runtime session logs (/logs/2026-09-20_15-41-00.log, latest.log)
+/logs/
+
+# IDE / editor
+/.idea/
+/.vscode/
+*.user
+
+# Compile database (real one lives inside build/<preset>/)
+compile_commands.json

@@ -1,0 +1,72 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 27, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": {
+        "PATH": "${sourceDir}/.cache/tools/bin:$penv{PATH}"
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_C_STANDARD": "11",
+        "CMAKE_CXX_STANDARD": "20",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_POSITION_INDEPENDENT_CODE": "ON"
+      }
+    },
+    {
+      "name": "linux-gcc-debug",
+      "displayName": "Linux GCC Debug (+ASan)",
+      "description": "x86_64 Linux, GCC, -Og -g3, AddressSanitizer, LTO off",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_C_FLAGS_DEBUG": "-Og -g3",
+        "CMAKE_CXX_FLAGS_DEBUG": "-Og -g3",
+        "WOKE_ENABLE_ASAN": "ON",
+        "WOKE_ENABLE_LTO": "OFF"
+      }
+    },
+    {
+      "name": "linux-gcc-release",
+      "displayName": "Linux GCC Release (LTO)",
+      "description": "x86_64 Linux, GCC, -O3 -march=x86-64-v2, IPO/LTO for release configs",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "gcc",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -march=x86-64-v2 -DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -march=x86-64-v2 -DNDEBUG",
+        "WOKE_ENABLE_ASAN": "OFF",
+        "WOKE_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "displayName": "Linux Clang Release (LTO)",
+      "description": "x86_64 Linux, Clang 17+, -O3, IPO/LTO for release configs",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_FLAGS_RELEASE": "-O3 -march=x86-64-v2 -DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -march=x86-64-v2 -DNDEBUG",
+        "WOKE_ENABLE_ASAN": "OFF",
+        "WOKE_ENABLE_LTO": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-gcc-debug", "configurePreset": "linux-gcc-debug" },
+    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release" },
+    { "name": "linux-clang-release", "configurePreset": "linux-clang-release" }
+  ]
+}
