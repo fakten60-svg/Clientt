@@ -101,12 +101,12 @@ bool jni_startup(JavaVM* vm) {
     if (rs == JNI_EDETACHED) {
         rs = vm->AttachCurrentThread(&env_ptr, nullptr);
         if (rs != JNI_OK || env_ptr == nullptr) {
-            WOKE_ERROR("jni", "AttachCurrentThread failed (%d)", static_cast<int>(rs));
+            WOKE_ERROR("jni", "AttachCurrentThread failed (%d)", rs);
             return false;
         }
         WOKE_INFO("jni", "current thread attached to the JVM");
     } else if (rs != JNI_OK || env_ptr == nullptr) {
-        WOKE_ERROR("jni", "JavaVM::GetEnv failed (%d)", static_cast<int>(rs));
+        WOKE_ERROR("jni", "JavaVM::GetEnv failed (%d)", rs);
         return false;
     }
     auto* env = static_cast<JNIEnv*>(env_ptr);

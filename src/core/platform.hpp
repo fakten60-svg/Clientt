@@ -19,7 +19,7 @@ namespace woke::platform {
 
 // Kernel thread id of the calling thread — cheap enough for every log line.
 inline long get_tid() noexcept {
-    return static_cast<long>(::syscall(SYS_gettid));
+    return ::syscall(SYS_gettid);   // syscall() already returns long
 }
 
 // Formats the current local-system time as "[YYYY-MM-DD HH:MM:SS.mmm]".
