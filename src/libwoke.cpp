@@ -1,26 +1,24 @@
 // ============================================================================
 //  woke.wtf — src/libwoke.cpp
-//  libwoke.so lifecycle, executed by the dynamic loader / JVM:
+//  libwoke.so lifecycle core, executed by the dynamic loader / JVM:
 //
 //    __attribute__((constructor))  — unique timestamped session log under
 //                                    logs/ + latest.log symlink + bootstrap
 //                                    messages, then arm the deferred-init
 //                                    worker when a JVM already exists
 //                                    (pure injection: no JNI_OnLoad coming).
-//    JNI_OnLoad()                  — JVM-driven entry (System.loadLibrary and
-//                                    manual test calls): attach the thread,
-//                                    parse mappings.json, populate the JNI
-//                                    reflection cache, then install the hook
-//                                    engine (glXSwapBuffers detour + bare
-//                                    ImGui context). Returns JNI_VERSION_1_8
-//                                    or JNI_ERR.
+//    JNI_OnLoad()                  — JVM-driven entry (see export/lifecycle.cpp):
+//                                    attach the thread, parse mappings.json,
+//                                    populate the JNI reflection cache, then
+//                                    install the hook engine (glXSwapBuffers
+//                                    detour + bare ImGui context).
 //    JNI_OnUnload()                — release all cached global refs.
 //    __attribute__((destructor))   — idempotent JNI shutdown + logger detach.
 //
-//  Exported woke_* functions (visibility("default") despite -fvisibility=
-//  hidden) let dlopen-based tests query the reflection cache.
+//  The exported woke_* functions live in src/export/*.cpp, split by topic:
+//  lifecycle.cpp (JNI entry + cache introspection), modules.cpp (module/
+//  setting/keybind API) and game_gui.cpp (client-state, gui, ui, tasks, config).
 // ============================================================================
-#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -38,6 +36,7 @@
 #include "core/config.hpp"
 #include "core/event_bus.hpp"
 #include "core/filesystem.hpp"
+#include "core/lifecycle.hpp"
 #include "core/logger.hpp"
 #include "core/task_queue.hpp"
 #include "game/game_state.hpp"
@@ -45,9 +44,7 @@
 #include "hook/hook_engine.hpp"
 #include "hook/imgui_backend.hpp"
 #include "hook/present_hook.hpp"
-#include "jni/mappings.hpp"
 #include "jni/reflection_cache.hpp"
-#include "modules/builtin.hpp"
 #include "modules/module.hpp"
 #include "ui/animation.hpp"
 #include "ui/notifications.hpp"
@@ -56,31 +53,35 @@
 #define WOKE_VERSION "0.1.0-dev"
 #endif
 
-// Must survive -fvisibility=hidden: the JVM and tests resolve these by name.
-#define WOKE_API __attribute__((visibility("default")))
-
-namespace {
+namespace woke::lifecycle {
 
 constexpr const char* kLogDir = "logs";
 constexpr const char* kLatestLink = "logs/latest.log";
 
-enum jni_state : int {
-    kDetached = 0,
-    kAttached = 1,   // thread env + JavaVM captured
-    kReady = 2,      // mappings parsed + reflection cache populated
-};
+// ---- shared state (declared in core/lifecycle.hpp) ---------------------------
 
 std::atomic<int> g_state{kDetached};
 std::mutex g_lifecycle_mutex;
 JavaVM* g_vm = nullptr;                            // guarded by g_lifecycle_mutex
-woke::jni::mappings_db g_mappings;                 // survives unload (reused)
+jni::mappings_db g_mappings;                       // survives unload (reused)
 
-// Deferred-init worker state (see start_deferred_init).
+// ---- deferred-init worker state ----------------------------------------------
+// When the client is dlopen'd into an already-running JVM, JNI_OnLoad never
+// fires, so nothing would ever call jni_startup(). The constructor cannot do
+// the work itself: it runs under glibc's loader lock and the reflection cache
+// calls FindClass, which may need to dlopen a jar while we hold that lock.
+//
+// The worker therefore waits out a grace period first — long enough for a
+// plain System.loadLibrary to deliver its JNI_OnLoad, and long enough that our
+// own dlopen has returned before any JNI call happens. Whatever runs first
+// wins; jni_startup() is mutex-guarded and idempotent either way.
 std::mutex g_defer_mutex;
 std::condition_variable g_defer_cv;
 std::atomic<bool> g_defer_stop{false};
 std::atomic<bool> g_defer_armed{false};
 std::thread g_defer_thread;
+
+namespace {
 
 const char* mappings_path() {
     const char* p = std::getenv("WOKE_MAPPINGS_PATH");
@@ -102,106 +103,6 @@ void update_latest_symlink(const char* session_path) {
         return;
     }
     WOKE_INFO("core", "latest.log symlink: %s -> %s", kLatestLink, base);
-}
-
-// Attach `vm` (or reuse this thread's env), parse mappings.json, populate the
-// reflection cache. Idempotent — guarded by g_lifecycle_mutex.
-bool jni_startup(JavaVM* vm) {
-    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
-
-    if (g_state.load(std::memory_order_acquire) >= kAttached) {
-        WOKE_DEBUG("jni", "jni_startup: already initialized (state=%d)",
-                   g_state.load(std::memory_order_relaxed));
-        return true;
-    }
-
-    // ---- 1) thread attachment ---------------------------------------------
-    void* env_ptr = nullptr;
-    jint rs = vm->GetEnv(&env_ptr, JNI_VERSION_1_8);
-    if (rs == JNI_EDETACHED) {
-        rs = vm->AttachCurrentThread(&env_ptr, nullptr);
-        if (rs != JNI_OK || env_ptr == nullptr) {
-            WOKE_ERROR("jni", "AttachCurrentThread failed (%d)", rs);
-            return false;
-        }
-        WOKE_INFO("jni", "current thread attached to the JVM");
-    } else if (rs != JNI_OK || env_ptr == nullptr) {
-        WOKE_ERROR("jni", "JavaVM::GetEnv failed (%d)", rs);
-        return false;
-    }
-    auto* env = static_cast<JNIEnv*>(env_ptr);
-    g_vm = vm;
-    g_state.store(kAttached, std::memory_order_release);
-    WOKE_INFO("jni", "JVM attached (JNI version 0x%04x)", JNI_VERSION_1_8);
-
-    // ---- 2) mappings.json ---------------------------------------------------
-    if (g_mappings.class_count() == 0) {
-        const auto t0 = std::chrono::steady_clock::now();
-        std::string err;
-        if (!g_mappings.load(mappings_path(), &err)) {
-            WOKE_ERROR("jni", "mappings load failed (%s): %s", mappings_path(), err.c_str());
-            return false;
-        }
-        const double ms =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        WOKE_INFO("jni", "mappings.json parsed: %zu classes, %zu methods, %zu fields (%.1f ms)",
-                  g_mappings.class_count(), g_mappings.method_count(),
-                  g_mappings.field_count(), ms);
-    }
-
-    // ---- 3) reflection cache ------------------------------------------------
-    const woke::jni::populate_stats stats =
-        woke::jni::reflection_cache::instance().populate(env, g_mappings);
-    WOKE_INFO("jni",
-              "reflection cache ready: classes %ld/%ld, methods %ld ok / %ld missing, "
-              "fields %ld ok / %ld missing (%.1f ms)",
-              stats.classes_ok, stats.classes_ok + stats.classes_missing,
-              stats.methods_ok, stats.methods_missing,
-              stats.fields_ok, stats.fields_missing, stats.elapsed_ms);
-
-    // ---- 4) modules + config (client-state framework) ----------------------
-    woke::game::game_state::instance().set_vm(vm);
-    woke::modules::register_builtins();
-    woke::config::load();   // applies saved module states + keybind
-
-    // ---- 5) hook engine: glXSwapBuffers detour + ImGui context --------------
-    if (woke::hook::present_startup()) {
-        WOKE_INFO("hook", "hook engine initialized: %s active, ImGui %s",
-                  woke::hook::present_target_name(),
-                  woke::hook::imgui_initialized() ? "ready" : "missing");
-    } else {
-        WOKE_WARN("hook", "present hook unavailable (no glXSwapBuffers) — continuing without overlay");
-    }
-
-    g_state.store(kReady, std::memory_order_release);
-    return true;
-}
-
-// ---------------------------------------------------------------------------
-// Deferred-init worker (pure-injection mode).
-//
-// When the client is dlopen'd into an already-running JVM, JNI_OnLoad never
-// fires, so nothing would ever call jni_startup(). The constructor cannot do
-// the work itself: it runs under glibc's loader lock and the reflection cache
-// calls FindClass, which may need to dlopen a jar while we hold that lock.
-//
-// The worker therefore waits out a grace period first — long enough for a
-// plain System.loadLibrary to deliver its JNI_OnLoad, and long enough that our
-// own dlopen has returned before any JNI call happens. Whatever runs first
-// wins; jni_startup() is mutex-guarded and idempotent either way.
-// ---------------------------------------------------------------------------
-constexpr int kDeferGraceDefaultMs = 1500;
-
-int defer_grace_ms() {
-    const char* env = std::getenv("WOKE_DEFER_GRACE_MS");
-    if (env != nullptr && env[0] != '\0') {
-        char* end = nullptr;
-        const long value = std::strtol(env, &end, 10);
-        if (end != env && value >= 0 && value <= 60000) {
-            return static_cast<int>(value);
-        }
-    }
-    return kDeferGraceDefaultMs;
 }
 
 void deferred_init_worker(JavaVM* vm) {
@@ -226,90 +127,6 @@ void deferred_init_worker(JavaVM* vm) {
     }
     WOKE_INFO("jni", "deferred initialization complete (state=%d) — injected client ready",
               g_state.load(std::memory_order_acquire));
-}
-
-// Arms the worker once. Safe from the loader constructor: it only spawns a
-// thread that sleeps before touching the JVM.
-void start_deferred_init(JavaVM* vm) {
-    std::lock_guard<std::mutex> lock(g_defer_mutex);
-    if (g_defer_armed.load(std::memory_order_relaxed)) {
-        return;
-    }
-    g_defer_stop.store(false, std::memory_order_relaxed);
-    g_defer_thread = std::thread(deferred_init_worker, vm);
-    g_defer_armed.store(true, std::memory_order_release);
-}
-
-// Wakes and joins the worker. Idempotent; never holds g_lifecycle_mutex, so it
-// cannot deadlock against a worker that is inside jni_startup().
-void stop_deferred_init() {
-    {
-        std::lock_guard<std::mutex> lock(g_defer_mutex);
-        if (!g_defer_armed.load(std::memory_order_relaxed)) {
-            return;
-        }
-        g_defer_stop.store(true, std::memory_order_release);
-    }
-    g_defer_cv.notify_all();
-    if (g_defer_thread.joinable()) {
-        g_defer_thread.join();
-    }
-    g_defer_armed.store(false, std::memory_order_release);
-}
-
-bool deferred_init_armed() {
-    return g_defer_armed.load(std::memory_order_acquire);
-}
-
-// Shared by JNI_OnUnload and the dlclose destructor — idempotent.
-void jni_shutdown() {
-    // Join the worker first: it may be inside jni_startup() holding
-    // g_lifecycle_mutex, and it must not race the teardown below.
-    stop_deferred_init();
-    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
-    if (g_state.load(std::memory_order_acquire) == kDetached) {
-        return;
-    }
-
-    // Modules first: on_disable() callbacks (e.g. Fullbright's gamma restore)
-    // still need the reflection cache and an attached env. Module state
-    // changes at shutdown are NOT persisted — the config file keeps the
-    // user's states for the next attach.
-    auto& registry = woke::modules::module_registry::instance();
-    for (woke::modules::module* m : registry.all()) {
-        m->set_enabled(false);
-    }
-    registry.clear();
-    woke::game::game_state::instance().set_vm(nullptr);
-
-    auto& cache = woke::jni::reflection_cache::instance();
-    JNIEnv* env = nullptr;
-    if (g_vm != nullptr &&
-        g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) == JNI_OK &&
-        env != nullptr) {
-        cache.release(env);
-    } else {
-        cache.clear();
-    }
-
-    // Hooks were installed by the same startup path — tear them down here.
-    // Engine first (restores the original prologue), then the ImGui context,
-    // so no detour can fire into a destroyed context.
-    woke::hook::engine_shutdown();
-    woke::hook::present_shutdown();
-
-    // UI subsystems hold no JVM state, but they must not survive the unload:
-    // toasts and animation channels would otherwise reference unmapped code.
-    woke::ui::notification_queue::instance().clear();
-    woke::ui::animation_controller::instance().clear();
-    woke::core::task_queue::instance().clear();
-    woke::core::event_bus::clear();
-
-    g_vm = nullptr;
-    g_state.store(kDetached, std::memory_order_release);
-    WOKE_INFO("jni", "JNI shutdown complete — reflection cache released "
-                     "(%zu mapping classes kept for re-attach)",
-              g_mappings.class_count());
 }
 
 // Probe for the injection case (JNI_OnLoad never fires for an injected .so).
@@ -341,18 +158,61 @@ void probe_jvm_for_deferred_init() {
 
 } // namespace
 
+constexpr int kDeferGraceDefaultMs = 1500;
+
+int defer_grace_ms() {
+    const char* env = std::getenv("WOKE_DEFER_GRACE_MS");
+    if (env != nullptr && env[0] != '\0') {
+        char* end = nullptr;
+        const long value = std::strtol(env, &end, 10);
+        if (end != env && value >= 0 && value <= 60000) {
+            return static_cast<int>(value);
+        }
+    }
+    return kDeferGraceDefaultMs;
+}
+
+void start_deferred_init(JavaVM* vm) {
+    std::lock_guard<std::mutex> lock(g_defer_mutex);
+    if (g_defer_armed.load(std::memory_order_relaxed)) {
+        return;
+    }
+    g_defer_stop.store(false, std::memory_order_relaxed);
+    g_defer_thread = std::thread(deferred_init_worker, vm);
+    g_defer_armed.store(true, std::memory_order_release);
+}
+
+void stop_deferred_init() {
+    {
+        std::lock_guard<std::mutex> lock(g_defer_mutex);
+        if (!g_defer_armed.load(std::memory_order_relaxed)) {
+            return;
+        }
+        g_defer_stop.store(true, std::memory_order_release);
+    }
+    g_defer_cv.notify_all();
+    if (g_defer_thread.joinable()) {
+        g_defer_thread.join();
+    }
+    g_defer_armed.store(false, std::memory_order_release);
+}
+
+bool deferred_init_armed() {
+    return g_defer_armed.load(std::memory_order_acquire);
+}
+
 // ----------------------------------------------------------------------------
 // Executed by ld.so when libwoke.so is loaded.
 // ----------------------------------------------------------------------------
 __attribute__((constructor)) static void woke_on_load() {
     char session_path[512] = {};
 
-    if (!woke::fs::get_timestamp_path(session_path, sizeof session_path, kLogDir, ".log")) {
+    if (!fs::get_timestamp_path(session_path, sizeof session_path, kLogDir, ".log")) {
         WOKE_ERROR("core", "bootstrap: cannot build session log path in %s — stderr only",
                    kLogDir);
         return;
     }
-    if (!woke::fs::file_logger_attach(session_path)) {
+    if (!fs::file_logger_attach(session_path)) {
         WOKE_ERROR("core", "bootstrap: cannot open session log '%s' (errno=%d) — stderr only",
                    session_path, errno);
         return;
@@ -373,499 +233,134 @@ __attribute__((constructor)) static void woke_on_load() {
 __attribute__((destructor)) static void woke_on_unload() {
     jni_shutdown();   // no-op if JNI_OnUnload already ran
     WOKE_INFO("core", "libwoke unloading — detaching session logger");
-    woke::fs::file_logger_detach();
+    fs::file_logger_detach();
 }
 
 // ----------------------------------------------------------------------------
-// JVM-driven lifecycle + exported cache introspection (dlsym-able)
+// Startup / shutdown (shared with src/export/*.cpp via core/lifecycle.hpp)
 // ----------------------------------------------------------------------------
-extern "C" {
 
-WOKE_API jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
-    (void)reserved;
-    if (vm == nullptr) {
-        WOKE_ERROR("jni", "JNI_OnLoad called with null JavaVM");
-        return JNI_ERR;
+// Attach `vm` (or reuse this thread's env), parse mappings.json, populate the
+// reflection cache. Idempotent — guarded by g_lifecycle_mutex.
+bool jni_startup(JavaVM* vm) {
+    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
+
+    if (g_state.load(std::memory_order_acquire) >= kAttached) {
+        WOKE_DEBUG("jni", "jni_startup: already initialized (state=%d)",
+                   g_state.load(std::memory_order_relaxed));
+        return true;
     }
-    // The JVM is driving us, so the deferred-init worker is not needed; join it
-    // before initializing so the two paths cannot interleave.
-    stop_deferred_init();
-    if (!jni_startup(vm)) {
-        return JNI_ERR;
+
+    // ---- 1) thread attachment -----------------------------------------------
+    void* env_ptr = nullptr;
+    jint rs = vm->GetEnv(&env_ptr, JNI_VERSION_1_8);
+    if (rs == JNI_EDETACHED) {
+        rs = vm->AttachCurrentThread(&env_ptr, nullptr);
+        if (rs != JNI_OK || env_ptr == nullptr) {
+            WOKE_ERROR("jni", "AttachCurrentThread failed (%d)", rs);
+            return false;
+        }
+        WOKE_INFO("jni", "current thread attached to the JVM");
+    } else if (rs != JNI_OK || env_ptr == nullptr) {
+        WOKE_ERROR("jni", "JavaVM::GetEnv failed (%d)", rs);
+        return false;
     }
-    WOKE_INFO("jni", "JNI_OnLoad complete — returning JNI_VERSION_1_8 (0x%04x)",
-              JNI_VERSION_1_8);
-    return JNI_VERSION_1_8;
-}
+    auto* env = static_cast<JNIEnv*>(env_ptr);
+    g_vm = vm;
+    g_state.store(kAttached, std::memory_order_release);
+    WOKE_INFO("jni", "JVM attached (JNI version 0x%04x)", JNI_VERSION_1_8);
 
-WOKE_API void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
-    (void)vm;
-    (void)reserved;
-    WOKE_INFO("jni", "JNI_OnUnload called — releasing reflection cache");
-    jni_shutdown();
-}
-
-WOKE_API int woke_jni_status() {
-    return g_state.load(std::memory_order_acquire);
-}
-
-// 1 while the pure-injection deferred-init worker is armed.
-WOKE_API int woke_jni_deferred_armed() {
-    return deferred_init_armed() ? 1 : 0;
-}
-
-WOKE_API long woke_mappings_class_count() {
-    return static_cast<long>(g_mappings.class_count());
-}
-WOKE_API long woke_mappings_method_count() {
-    return static_cast<long>(g_mappings.method_count());
-}
-WOKE_API long woke_mappings_field_count() {
-    return static_cast<long>(g_mappings.field_count());
-}
-
-WOKE_API long woke_jni_cached_class_count() {
-    return woke::jni::reflection_cache::instance().class_count();
-}
-WOKE_API long woke_jni_cached_method_count() {
-    return woke::jni::reflection_cache::instance().method_count();
-}
-WOKE_API long woke_jni_cached_field_count() {
-    return woke::jni::reflection_cache::instance().field_count();
-}
-
-// Yarn class name -> runtime intermediary name ("" when mappings lack it).
-WOKE_API const char* woke_reflection_intermediary_class(const char* yarn_class) {
-    if (yarn_class == nullptr) {
-        return nullptr;
+    // ---- 2) mappings.json -----------------------------------------------------
+    if (g_mappings.class_count() == 0) {
+        const auto t0 = std::chrono::steady_clock::now();
+        std::string err;
+        if (!g_mappings.load(mappings_path(), &err)) {
+            WOKE_ERROR("jni", "mappings load failed (%s): %s", mappings_path(), err.c_str());
+            return false;
+        }
+        const double ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        WOKE_INFO("jni", "mappings.json parsed: %zu classes, %zu methods, %zu fields (%.1f ms)",
+                  g_mappings.class_count(), g_mappings.method_count(),
+                  g_mappings.field_count(), ms);
     }
-    const std::string* s =
-        woke::jni::reflection_cache::instance().intermediary_class(yarn_class);
-    return (s != nullptr) ? s->c_str() : nullptr;
-}
 
-// Yarn class name -> cached jclass (global ref; null when unresolved).
-WOKE_API void* woke_reflection_class(const char* yarn_class) {
-    if (yarn_class == nullptr) {
-        return nullptr;
-    }
-    return static_cast<void*>(
-        woke::jni::reflection_cache::instance().find_class(yarn_class));
-}
+    // ---- 3) reflection cache ----------------------------------------------------
+    const jni::populate_stats stats = jni::reflection_cache::instance().populate(env, g_mappings);
+    WOKE_INFO("jni",
+              "reflection cache ready: classes %ld/%ld, methods %ld ok / %ld missing, "
+              "fields %ld ok / %ld missing (%.1f ms)",
+              stats.classes_ok, stats.classes_ok + stats.classes_missing,
+              stats.methods_ok, stats.methods_missing,
+              stats.fields_ok, stats.fields_missing, stats.elapsed_ms);
 
-// Yarn class + method -> cached jmethodID. `descriptor` may be null to get
-// the first resolved overload (pass the exact descriptor to disambiguate).
-WOKE_API void* woke_reflection_method(const char* yarn_class, const char* method,
-                                      const char* descriptor) {
-    if (yarn_class == nullptr || method == nullptr) {
-        return nullptr;
-    }
-    const std::string desc = (descriptor != nullptr) ? descriptor : std::string{};
-    return static_cast<void*>(woke::jni::reflection_cache::instance().find_method(
-        yarn_class, method, (descriptor != nullptr) ? &desc : nullptr));
-}
+    // ---- 4) modules + config (client-state framework) ----------------------------
+    game::game_state::instance().set_vm(vm);
+    modules::register_builtins();
+    config::load();   // applies saved module states + keybind
 
-WOKE_API void* woke_reflection_field(const char* yarn_class, const char* field,
-                                     const char* descriptor) {
-    if (yarn_class == nullptr || field == nullptr) {
-        return nullptr;
-    }
-    const std::string desc = (descriptor != nullptr) ? descriptor : std::string{};
-    return static_cast<void*>(woke::jni::reflection_cache::instance().find_field(
-        yarn_class, field, (descriptor != nullptr) ? &desc : nullptr));
-}
-
-// ---- hook engine / present-hook introspection ------------------------------
-WOKE_API int woke_hook_status() {
-    return woke::hook::present_installed() ? 1 : 0;
-}
-WOKE_API int woke_hook_imgui_initialized() {
-    return woke::hook::imgui_initialized() ? 1 : 0;
-}
-WOKE_API const char* woke_hook_target() {
-    return woke::hook::present_target_name();
-}
-WOKE_API long long woke_hook_present_count() {
-    return woke::hook::present_hit_count();
-}
-WOKE_API long long woke_hook_suppressed_count() {
-    return woke::hook::present_suppressed_count();
-}
-WOKE_API long long woke_hook_imgui_frame_count() {
-    return woke::hook::present_imgui_frame_count();
-}
-WOKE_API long long woke_hook_last_frame_ns() {
-    return woke::hook::present_last_frame_ns();
-}
-WOKE_API long long woke_hook_total_frame_ns() {
-    return woke::hook::present_total_frame_ns();
-}
-WOKE_API void woke_hook_set_gui_open(int open) {
-    woke::hook::set_gui_open(open != 0);
-}
-
-// Renderer mode: 0 = idle (no frame drawn yet), 1 = OpenGL3 attached,
-// 2 = CPU-only bare mode.
-WOKE_API int woke_hook_backend_status() {
-    return static_cast<int>(woke::hook::backend::current_mode());
-}
-
-// Last known drawable size (XGetGeometry of the swap drawable).
-WOKE_API void woke_hook_display_size(int* width, int* height) {
-    if (width != nullptr) {
-        *width = woke::hook::backend::display_width();
-    }
-    if (height != nullptr) {
-        *height = woke::hook::backend::display_height();
-    }
-}
-
-WOKE_API long long woke_hook_input_updates() {
-    return woke::hook::backend::input_update_count();
-}
-
-// ---- module registry -------------------------------------------------------
-WOKE_API int woke_module_count() {
-    return static_cast<int>(woke::modules::module_registry::instance().all().size());
-}
-
-WOKE_API const char* woke_module_name(int index) {
-    const auto all = woke::modules::module_registry::instance().all();
-    return (index >= 0 && index < static_cast<int>(all.size())) ? all[static_cast<std::size_t>(index)]->name().c_str()
-                                                               : nullptr;
-}
-
-WOKE_API const char* woke_module_category(int index) {
-    const auto all = woke::modules::module_registry::instance().all();
-    return (index >= 0 && index < static_cast<int>(all.size()))
-               ? all[static_cast<std::size_t>(index)]->category().c_str()
-               : nullptr;
-}
-
-WOKE_API int woke_module_enabled(const char* name) {
-    if (name == nullptr) {
-        return -1;
-    }
-    const woke::modules::module* m = woke::modules::module_registry::instance().find(name);
-    return (m != nullptr) ? (m->enabled() ? 1 : 0) : -1;
-}
-
-// Toggles a module and persists the config immediately. 1 = ok, 0 = unknown.
-WOKE_API int woke_module_set_enabled(const char* name, int enabled) {
-    if (name == nullptr) {
-        return 0;
-    }
-    if (!woke::modules::module_registry::instance().set_enabled(name, enabled != 0)) {
-        return 0;
-    }
-    woke::config::save();
-    return 1;
-}
-
-WOKE_API void woke_modules_tick() {
-    woke::modules::module_registry::instance().tick_all(woke::game::game_state::instance());
-}
-
-// ---- client-state access ---------------------------------------------------
-WOKE_API int woke_game_client_ready() {
-    return woke::game::game_state::instance().client_ready() ? 1 : 0;
-}
-WOKE_API int woke_game_current_fps() {
-    return woke::game::game_state::instance().current_fps();
-}
-WOKE_API double woke_game_gamma() {
-    return woke::game::game_state::instance().gamma();
-}
-WOKE_API int woke_game_set_gamma(double gamma) {
-    return woke::game::game_state::instance().set_gamma(gamma) ? 1 : 0;
-}
-WOKE_API int woke_game_is_sprinting() {
-    return woke::game::game_state::instance().is_sprinting() ? 1 : 0;
-}
-WOKE_API int woke_game_set_sprinting(int on) {
-    return woke::game::game_state::instance().set_sprinting(on != 0) ? 1 : 0;
-}
-WOKE_API int woke_game_fov() {
-    return woke::game::game_state::instance().fov();
-}
-WOKE_API int woke_game_set_fov(int fov) {
-    return woke::game::game_state::instance().set_fov(fov) ? 1 : 0;
-}
-WOKE_API int woke_game_is_sneaking() {
-    return woke::game::game_state::instance().is_sneaking() ? 1 : 0;
-}
-WOKE_API int woke_game_set_sneaking(int on) {
-    return woke::game::game_state::instance().set_sneaking(on != 0) ? 1 : 0;
-}
-
-// ---- click-gui -------------------------------------------------------------
-WOKE_API int woke_gui_is_open() {
-    return woke::gui::is_open() ? 1 : 0;
-}
-WOKE_API void woke_gui_set_open(int open) {
-    woke::gui::set_open(open != 0);
-}
-WOKE_API void woke_gui_toggle() {
-    woke::gui::toggle();
-}
-// Headless frame cycle (NewFrame -> draw -> Render). Returns 1 on success;
-// *modules_shown / *toggles may be null.
-WOKE_API int woke_gui_draw_frame(int* modules_shown, int* toggles) {
-    if (!woke::hook::imgui_initialized()) {
-        return 0;   // no ImGui context — nothing to draw
-    }
-    const long long draws_before = woke::gui::draw_count();
-    const woke::gui::draw_stats st = woke::gui::render_frame();
-    if (woke::gui::draw_count() == draws_before) {
-        return 0;   // refused: the client renders through GL, no headless frame
-    }
-    if (modules_shown != nullptr) {
-        *modules_shown = st.modules_shown;
-    }
-    if (toggles != nullptr) {
-        *toggles = st.toggles;
-    }
-    return 1;
-}
-WOKE_API long long woke_gui_draw_count() {
-    return woke::gui::draw_count();
-}
-
-// ---- module categories + settings ------------------------------------------
-WOKE_API int woke_module_category_count_total() {
-    return static_cast<int>(woke::modules::kCategoryCount);
-}
-
-WOKE_API const char* woke_module_category_at(int index) {
-    return (index >= 0 && index < static_cast<int>(woke::modules::kCategoryCount))
-               ? woke::modules::kCategories[index]
-               : nullptr;
-}
-
-WOKE_API int woke_module_count_in_category(const char* category) {
-    return (category != nullptr) ? woke::modules::category_module_count(category) : 0;
-}
-
-WOKE_API int woke_module_enabled_in_category(const char* category) {
-    return (category != nullptr) ? woke::modules::category_enabled_count(category) : 0;
-}
-
-WOKE_API int woke_module_setting_count(const char* module_name) {
-    const woke::modules::module* m =
-        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
-                                : nullptr;
-    return (m != nullptr) ? static_cast<int>(m->settings().size()) : -1;
-}
-
-WOKE_API const char* woke_module_setting_name(const char* module_name, int index) {
-    const woke::modules::module* m =
-        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
-                                : nullptr;
-    if (m == nullptr || index < 0) {
-        return nullptr;
-    }
-    const woke::core::base_setting* s = m->settings().at(static_cast<std::size_t>(index));
-    return (s != nullptr) ? s->name().c_str() : nullptr;
-}
-
-// 0=boolean 1=integer 2=decimal 3=color 4=text, -1 unknown.
-WOKE_API int woke_module_setting_kind(const char* module_name, const char* setting_name) {
-    const woke::modules::module* m =
-        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
-                                : nullptr;
-    if (m == nullptr || setting_name == nullptr) {
-        return -1;
-    }
-    const woke::core::base_setting* s = m->settings().find(setting_name);
-    return (s != nullptr) ? static_cast<int>(s->type()) : -1;
-}
-
-WOKE_API int woke_module_setting_bool(const char* module_name, const char* setting_name) {
-    const woke::modules::module* m =
-        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
-                                : nullptr;
-    if (m == nullptr || setting_name == nullptr) {
-        return -1;
-    }
-    const woke::core::base_setting* s = m->settings().find(setting_name);
-    if (s == nullptr || s->type() != woke::core::setting_type::boolean) {
-        return -1;
-    }
-    return s->to_value().boolean ? 1 : 0;
-}
-
-WOKE_API double woke_module_setting_double(const char* module_name, const char* setting_name) {
-    const woke::modules::module* m =
-        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
-                                : nullptr;
-    if (m == nullptr || setting_name == nullptr) {
-        return 0.0;
-    }
-    const woke::core::base_setting* s = m->settings().find(setting_name);
-    if (s == nullptr) {
-        return 0.0;
-    }
-    const woke::core::setting_value v = s->to_value();
-    return (v.type == woke::core::setting_type::decimal) ? v.decimal
-                                                        : static_cast<double>(v.integer);
-}
-
-WOKE_API int woke_module_set_setting_double(const char* module_name, const char* setting_name,
-                                            double value) {
-    woke::modules::module* m =
-        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
-                                : nullptr;
-    if (m == nullptr || setting_name == nullptr) {
-        return 0;
-    }
-    woke::core::base_setting* s = m->settings().find(setting_name);
-    if (s == nullptr) {
-        return 0;
-    }
-    woke::core::setting_value v = s->to_value();
-    if (v.type == woke::core::setting_type::decimal) {
-        v.decimal = value;
+    // ---- 5) hook engine: glXSwapBuffers detour + ImGui context --------------------
+    if (hook::present_startup()) {
+        WOKE_INFO("hook", "hook engine initialized: %s active, ImGui %s",
+                  hook::present_target_name(),
+                  hook::imgui_initialized() ? "ready" : "missing");
     } else {
-        v.integer = static_cast<long long>(value);
+        WOKE_WARN("hook", "present hook unavailable (no glXSwapBuffers) — continuing without overlay");
     }
-    s->from_value(v);
-    return 1;
+
+    g_state.store(kReady, std::memory_order_release);
+    return true;
 }
 
-WOKE_API int woke_module_keybind(const char* module_name) {
-    return (module_name != nullptr) ? woke::config::module_keybind(module_name) : 0;
-}
-
-WOKE_API int woke_module_set_keybind(const char* module_name, int keycode) {
-    return woke::config::set_module_keybind(module_name, keycode) ? 1 : 0;
-}
-
-WOKE_API int woke_config_reset_settings(const char* module_name) {
-    return woke::config::reset_settings(module_name);
-}
-
-// ---- UI subsystems ---------------------------------------------------------
-WOKE_API int woke_gui_select_page(const char* page) {
-    return woke::gui::select_page(page) ? 1 : 0;
-}
-WOKE_API const char* woke_gui_page() {
-    return woke::gui::current_page();
-}
-WOKE_API void woke_gui_set_search(const char* text) {
-    woke::gui::set_search(text);
-}
-WOKE_API const char* woke_gui_search() {
-    return woke::gui::search_query();
-}
-WOKE_API void woke_gui_set_grid(int grid) {
-    woke::gui::set_grid_view(grid != 0);
-}
-WOKE_API int woke_gui_grid() {
-    return woke::gui::grid_view() ? 1 : 0;
-}
-WOKE_API void woke_gui_expand(const char* module_name) {
-    woke::gui::set_expanded(module_name);
-}
-WOKE_API const char* woke_gui_expanded() {
-    return woke::gui::expanded();
-}
-WOKE_API int woke_gui_wants_frames() {
-    return woke::gui::wants_frames() ? 1 : 0;
-}
-
-// Toast notifications (kind: 0 info, 1 success, 2 warning, 3 error).
-WOKE_API int woke_notify(const char* title, const char* message, int kind) {
-    const auto k = (kind >= 0 && kind <= 3) ? static_cast<woke::ui::toast_kind>(kind)
-                                            : woke::ui::toast_kind::info;
-    woke::ui::notification_queue::instance().push(k, title, message);
-    return 1;
-}
-WOKE_API int woke_notifications_active() {
-    return static_cast<int>(woke::ui::notification_queue::instance().active());
-}
-WOKE_API long long woke_notifications_pushed() {
-    return woke::ui::notification_queue::instance().pushed_count();
-}
-
-// Animation engine introspection.
-WOKE_API int woke_animations_channels() {
-    return static_cast<int>(woke::ui::animation_controller::instance().channel_count());
-}
-WOKE_API long long woke_animations_ticks() {
-    return woke::ui::animation_controller::instance().tick_count();
-}
-WOKE_API float woke_animations_last_dt() {
-    return woke::ui::animation_controller::instance().last_dt();
-}
-
-// Game-thread task queue. woke_tasks_post_probe enqueues a job that only
-// increments the executed counter — used by tests to prove that work posted
-// from a foreign thread runs on the frame thread.
-WOKE_API int woke_tasks_post_probe() {
-    return woke::core::task_queue::instance().post([] {
-        WOKE_DEBUG("core", "probe task executed on the game thread");
-    })
-               ? 1
-               : 0;
-}
-WOKE_API long long woke_tasks_pending() {
-    return static_cast<long long>(woke::core::task_queue::instance().pending());
-}
-WOKE_API long long woke_tasks_posted() {
-    return woke::core::task_queue::instance().posted_count();
-}
-WOKE_API long long woke_tasks_executed() {
-    return woke::core::task_queue::instance().executed_count();
-}
-WOKE_API long long woke_tasks_dropped() {
-    return woke::core::task_queue::instance().dropped_count();
-}
-WOKE_API int woke_tasks_drain() {
-    return static_cast<int>(woke::core::task_queue::instance().drain());
-}
-WOKE_API int woke_tasks_on_game_thread() {
-    return woke::core::task_queue::instance().on_game_thread() ? 1 : 0;
-}
-
-// Event bus listener counts by event name ("module_toggled", "frame_tick",
-// "gui_visibility_changed", "config_persisted"); -1 for an unknown name.
-WOKE_API int woke_event_listeners(const char* event_name) {
-    if (event_name == nullptr) {
-        return -1;
+// Shared by JNI_OnUnload and the dlclose destructor — idempotent.
+void jni_shutdown() {
+    // Join the worker first: it may be inside jni_startup() holding
+    // g_lifecycle_mutex, and it must not race the teardown below.
+    stop_deferred_init();
+    std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
+    if (g_state.load(std::memory_order_acquire) == kDetached) {
+        return;
     }
-    const std::string name = event_name;
-    if (name == "module_toggled") {
-        return static_cast<int>(woke::core::event_bus::listener_count<woke::core::module_toggled>());
+
+    // Modules first: on_disable() callbacks (e.g. Fullbright's gamma restore)
+    // still need the reflection cache and an attached env. Module state
+    // changes at shutdown are NOT persisted — the config file keeps the
+    // user's states for the next attach.
+    auto& registry = modules::module_registry::instance();
+    for (modules::module* m : registry.all()) {
+        m->set_enabled(false);
     }
-    if (name == "frame_tick") {
-        return static_cast<int>(woke::core::event_bus::listener_count<woke::core::frame_tick>());
+    registry.clear();
+    game::game_state::instance().set_vm(nullptr);
+
+    auto& cache = jni::reflection_cache::instance();
+    JNIEnv* env = nullptr;
+    if (g_vm != nullptr &&
+        g_vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_8) == JNI_OK &&
+        env != nullptr) {
+        cache.release(env);
+    } else {
+        cache.clear();
     }
-    if (name == "gui_visibility_changed") {
-        return static_cast<int>(
-            woke::core::event_bus::listener_count<woke::core::gui_visibility_changed>());
-    }
-    if (name == "config_persisted") {
-        return static_cast<int>(
-            woke::core::event_bus::listener_count<woke::core::config_persisted>());
-    }
-    return -1;
+
+    // Hooks were installed by the same startup path — tear them down here.
+    // Engine first (restores the original prologue), then the ImGui context,
+    // so no detour can fire into a destroyed context.
+    hook::engine_shutdown();
+    hook::present_shutdown();
+
+    // UI subsystems hold no JVM state, but they must not survive the unload:
+    // toasts and animation channels would otherwise reference unmapped code.
+    ui::notification_queue::instance().clear();
+    ui::animation_controller::instance().clear();
+    core::task_queue::instance().clear();
+    core::event_bus::clear();
+
+    g_vm = nullptr;
+    g_state.store(kDetached, std::memory_order_release);
+    WOKE_INFO("jni", "JNI shutdown complete — reflection cache released "
+                     "(%zu mapping classes kept for re-attach)",
+              g_mappings.class_count());
 }
 
-// ---- config ----------------------------------------------------------------
-WOKE_API const char* woke_config_path() {
-    return woke::config::path();
-}
-WOKE_API int woke_config_load() {
-    return woke::config::load() ? 1 : 0;
-}
-WOKE_API int woke_config_save() {
-    return woke::config::save() ? 1 : 0;
-}
-WOKE_API int woke_config_keybind() {
-    return woke::config::keybind();
-}
-WOKE_API void woke_config_set_keybind(int keycode) {
-    woke::config::set_keybind(keycode);
-}
-
-} // extern "C"
+} // namespace woke::lifecycle

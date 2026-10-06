@@ -71,9 +71,12 @@ Six categories are always present in the sidebar (`Combat`, `Mace`, `Misc`,
 
 Every module derives from `BaseModule` with `on_enable` / `on_disable` / `on_tick`
 / `on_render` hooks and declares typed `BaseSetting<T>` values (boolean, integer,
-decimal, color, text). Settings serialize automatically into the config file; a
-toggle emits `core::event_bus::emit(module_toggled{...})` so the dashboard toast
-and any other listener react without a direct dependency.
+decimal, color, text) plus `mode_setting` dropdowns — an integer-backed setting
+with named choices (e.g. the HUD watermark corner) that serializes as its index,
+edits through a combo box in the dashboard and exposes its choices via the
+`woke_module_setting_choice_count/_label` API. Settings serialize automatically
+into the config file; a toggle emits `core::event_bus::emit(module_toggled{...})`
+so the dashboard toast and any other listener react without a direct dependency.
 
 ## The macOS dashboard
 
@@ -179,10 +182,11 @@ FORCE=1 scripts/fetch_mappings.sh         # force re-download of cached jars
 ## Project layout
 
 ```
-src/libwoke.cpp              lifecycle, JNI entry points, deferred-init worker, woke_* exports
+src/libwoke.cpp              lifecycle core: constructor/destructor, deferred-init worker, startup/shutdown
+src/export/                  woke_* C API by topic: lifecycle.cpp, modules.cpp, game_gui.cpp
 src/core/logger.hpp         multi-session colorized logger (console + file + latest.log)
 src/core/config.*            JSON config engine (module states, settings, keybinds)
-src/core/setting.hpp         BaseSetting<T> templated setting primitives + setting_group
+src/core/setting.hpp         BaseSetting<T> templated setting primitives + mode_setting dropdowns + setting_group
 src/core/event_bus.hpp       decoupled per-type event channels (module_toggled, frame_tick, ...)
 src/core/task_queue.*        bounded ring of callables drained on the game thread
 src/jni/                     mappings.json parser + jclass/jmethodID/jfieldID cache
@@ -195,7 +199,12 @@ src/ui/component.*           reusable ImGui widgets (traffic light, toggle, sear
 src/ui/notifications.*       toast queue (slide-in, lifetime bar)
 src/utils/render.*           RenderUtils: rounded rects, borders, shadows, gradients, text clip
 src/utils/math.hpp           MathUtils: clamp/lerp/exp_approach/spring/easing/color
-src/gui/gui.*                the macOS dashboard (pages, cards, settings editors, keybind polling)
+src/gui/gui.*                the macOS dashboard orchestrator (window chrome, pages, public API)
+src/gui/internal.*           dashboard shared state + one-time widget configuration
+src/gui/sidebar.cpp          navigation sidebar + GENERAL pages (Settings/Theme/Configs/...)
+src/gui/card.cpp             module card widget + list/grid layout + settings panel
+src/gui/setting_row.cpp      generic BaseSetting<T> editor row (checkbox/slider/combo/color/text)
+src/gui/keybind.cpp          X11 keybind polling + zero-alloc search matcher
 src/hook/hook_engine.*       MinHook wrapper + engine shutdown
 src/hook/present_hook.*      glXSwapBuffers detour, task drain, frame_tick, suppression metrics
 src/hook/imgui_backend.*     renderer mode decision, GL attach, X11 display/pointer input
