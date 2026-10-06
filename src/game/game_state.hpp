@@ -20,6 +20,7 @@
 #include <jni.h>
 
 #include <mutex>
+#include <vector>
 
 namespace woke::game {
 
@@ -163,6 +164,85 @@ public:
     bool nearest_crystal_target(float max_distance, combat_target_info& out,
                                 char* name_buf, std::size_t cap);
 
+    // Public scan wrapper for any yarn class filter (Pearl Catch scans for
+    // the Ender Pearl entity class the same way the crystal scan does).
+    bool nearest_entity_of_class(float max_distance, const char* yarn_class,
+                                 combat_target_info& out);
+
+    // ---- macro automation accessors (Safe Anchor Macro, Shield Breaker,
+    // Pearl Catch) ----------------------------------------------------------
+
+    // The vanilla use-click on the held item:
+    // interactionManager.interactItem(player, MAIN_HAND) — the same call a
+    // right-click in the air performs (throw pearl / wind charge is decided
+    // by the game itself). false when the path is absent.
+    bool client_use_item();
+
+    // True when the entity under the crosshair is a living one currently
+    // using an item (LivingEntity.isUsingItem — Shield Breaker's gate).
+    bool crosshair_target_using_item();
+
+    // Scans the player's own inventory for the Items.<field> item named by
+    // `items_field_yarn`. Slots 0-8 (hotbar) are checked first; slots 9-35
+    // (storage rows) only when `hotbar_only` is false. Returns false when
+    // the item is not carried (or the inventory graph is absent).
+    bool find_inventory_slot(const char* items_field_yarn, bool hotbar_only, int& out_slot);
+
+    // Writes PlayerInventory.selectedSlot — the same client state the number
+    // keys write (the vanilla client syncs it to the server itself).
+    bool select_hotbar_slot(int slot);
+
+    // True when the main hand holds ANY of the listed Items.<field> items
+    // (Shield Breaker's axe probe: netherite/diamond/iron/golden axe).
+    bool main_hand_item_any(const char* const* items_fields, std::size_t count);
+
+    // ---- view rotation at a world point (macro aim) -------------------------
+
+    // Point-based variant of aim_angle_to(): computes the yaw/pitch needed
+    // to look at an exact world position, optionally applies ONE bounded
+    // step (max_step_deg scaled by gain) and reports the angular delta (deg)
+    // BEFORE the step. The rotation lives in the local Entity — client state
+    // only, exactly like mouse-look.
+    bool aim_at_point(double tx, double ty, double tz, double max_step_deg, double gain,
+                      bool apply, double& delta_deg);
+
+    // Same bounded aim against an entity's origin (projectile interception
+    // aims at the pearl itself, not its chest).
+    bool aim_at_entity(jobject target, double max_step_deg, double gain, bool apply,
+                       double& delta_deg);
+
+    // ---- visual snapshots (Player ESP / Storage ESP / Name Tags / Tracers) ---
+
+    // One other player as observed in the client world (client state only).
+    struct esp_player {
+        double x = 0.0, y = 0.0, z = 0.0;   // feet position
+        float yaw = 0.0f, pitch = 0.0f;
+        float health = 0.0f, max_health = 0.0f;
+        char name[64];                      // GameProfile name (empty when unreadable)
+    };
+
+    // Snapshot of every OTHER player entity in reach (local player excluded).
+    bool esp_scan_players(double max_distance, std::vector<esp_player>& out);
+
+    // One storage-like block entity (chest/barrel/...) with its center.
+    struct esp_storage {
+        double x = 0.0, y = 0.0, z = 0.0;   // block center
+        int kind = 0;                       // index into the storage kind table
+    };
+
+    // Snapshot of the world's block entities that match the storage kind
+    // table (BlockEntity.getPos + Vec3i getters).
+    bool esp_scan_block_entities(double max_distance, std::vector<esp_storage>& out);
+
+    // Projects a world point onto the overlay: builds the view basis from
+    // the local player's position/rotation and a perspective from the game
+    // fov + the given viewport size (approximation of the vanilla camera;
+    // good enough for boxes/lines, documented in the README). `visible` is
+    // false for points behind the camera or too close. Returns false only
+    // when the player graph is unreachable.
+    bool project_world_to_screen(double wx, double wy, double wz, double width,
+                                 double height, double& sx, double& sy, bool& visible);
+
 private:
     game_state() = default;
 
@@ -202,5 +282,13 @@ private:
     jmethodID int_value_of_ = nullptr;
     jmethodID int_int_value_ = nullptr;
 };
+
+} // namespace woke::game
+
+namespace woke::game {
+
+// Storage-kind table behind esp_storage::kind (Storage ESP labels + tests).
+int esp_storage_kind_count();
+const char* esp_storage_kind_label(int kind);
 
 } // namespace woke::game

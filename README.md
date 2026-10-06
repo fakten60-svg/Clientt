@@ -16,7 +16,7 @@ Produces a single shared object: **`libwoke.so`**.
 | Present hook | MinHook detour on `glXSwapBuffers`, always chaining to the original; timestamps its own work to keep per-frame overhead measurable |
 | Overlay | Dear ImGui 1.92 **macOS dashboard** click-gui (traffic-light title bar, category sidebar, searchable module cards with Apple-style pill toggles, grid/list view, toasts, live metrics footer). When the GUI is closed and no animation/toast is settling the detour performs **zero** ImGui work (draw-call suppression) |
 | Input | Keybind edge-detection via `XQueryKeymap` on the game's X11 `Display`; pointer state via `XQueryPointer` |
-| Modules | 18 built-ins across 6 spec categories — Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor (Combat); Auto Mace (Mace); Spear Lunge (Spear); HUD, Fullbright, Zoom (Visual); Sprint, Sneak (Movement). Each has typed `BaseSetting`s; combat automations only reuse the vanilla attack/use/swap paths |
+| Modules | 25 built-ins across 6 spec categories — Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor, Safe Anchor Macro, Shield Breaker, Pearl Catch (Combat); Auto Mace (Mace); Spear Lunge (Spear); HUD, Fullbright, Zoom, Player ESP, Storage ESP, Name Tags, Tracers (Visual); Sprint, Sneak (Movement). Each has typed `BaseSetting`s; combat automations only reuse the vanilla attack/use/swap paths |
 | Config | `woke.wtf/config.v1` JSON — module states, per-module `settings`, per-module `keybinds`, and the GUI keybind; written on every toggle/edit |
 | Subsystems | Decoupled type-safe `core::event_bus`, main-thread `core::task_queue`, `ui::notification_queue` toasts, `ui::animation_controller` (spring/easing), `ui::theme` palette, `utils::render`/`utils::math` stateless helpers |
 
@@ -74,6 +74,9 @@ Six categories are always present in the sidebar (`Combat`, `Mace`, `Misc`,
 | Auto Hit Crystal | Combat | Scans the world for the nearest End Crystal in reach and attacks it through the vanilla attack call pair |
 | Anchor Macro | Combat | Repeats the vanilla `interactBlock` use-click on the crosshair block while a respawn anchor is held (place/charge/detonate is the game's own decision) |
 | SafeAnchor | Combat | Watchdog: disables Anchor Macro once the player's health drops below the configured threshold |
+| Safe Anchor Macro | Combat | Anchor Macro with a Glowstone shield: before every detonation volley it selects the Glowstone hotbar slot, places one block between the player and the anchor through the vanilla use-click, swaps back to the anchor and only then runs the (capped) anchor use-clicks |
+| Shield Breaker | Combat | Attacks the crosshair target the moment it raises a shield (`LivingEntity.isUsingItem`) while an axe is held — the vanilla axe attack disables the shield |
+| Pearl Catch | Combat | Throws an ender pearl, then scans the world for the pearl entity, computes the interception angle each tick (bounded aim step, `aim_at_entity`) and fires a wind charge from its hotbar slot once the view is on target |
 | Auto Mace | Mace | Attacks the crosshair target while falling at least the configured distance — timed for the mace smite window; optionally requires the mace |
 | Spear Lunge | Spear | Attacks the crosshair target and boosts the player's own velocity along the look vector (`Entity.setVelocity`, the vanilla movement-state write) |
 | HUD | Visual | Draws a watermark (optionally with live FPS) in a configurable corner (mode dropdown) |
@@ -81,6 +84,10 @@ Six categories are always present in the sidebar (`Combat`, `Mace`, `Misc`,
 | Zoom | Visual | Read-modify-restore of the `fov` video setting (`Integer`-boxed `SimpleOption`) |
 | Sprint | Movement | Per-tick `Entity#setSprinting(true)` assert while enabled |
 | Sneak | Movement | Per-tick `Entity#setSneaking(true)` assert while enabled |
+| Player ESP | Visual | Per-tick snapshot of every other player in reach (positions, rotation, health, GameProfile name) drawn as a box + optional health bar |
+| Storage ESP | Visual | Per-tick snapshot of the world's storage block entities (chest/barrel/shulker/hopper/dispenser/dropper/furnace/brewing stand/lectern/ender chest/bookshelf/decorated pot) drawn as a labeled box |
+| Name Tags | Visual | Draws the other players' GameProfile names above their heads |
+| Tracers | Visual | Draws a line from the bottom-center of the screen to every other player in reach |
 
 Every module derives from `BaseModule` with `on_enable` / `on_disable` / `on_tick`
 / `on_render` hooks and declares typed `BaseSetting<T>` values (boolean, integer,
@@ -90,6 +97,14 @@ edits through a combo box in the dashboard and exposes its choices via the
 `woke_module_setting_choice_count/_label` API. Settings serialize automatically
 into the config file; a toggle emits `core::event_bus::emit(module_toggled{...})`
 so the dashboard toast and any other listener react without a direct dependency.
+
+The world-overlay modules (Player ESP, Storage ESP, Name Tags, Tracers) snapshot
+the world in `on_tick` and draw in `on_render`, so the render path never touches
+JNI; like every `on_render` hook they draw while the ClickGUI is open (the
+framework's draw window, same as Target HUD). Their screen positions come from
+`game_state::project_world_to_screen` — a view-basis + perspective projection
+built from the local player's position/rotation and the game fov, an intentional
+approximation of the vanilla camera that needs no extra hooks.
 
 ## The macOS dashboard
 
@@ -204,9 +219,11 @@ src/core/event_bus.hpp       decoupled per-type event channels (module_toggled, 
 src/core/task_queue.*        bounded ring of callables drained on the game thread
 src/jni/                     mappings.json parser + jclass/jmethodID/jfieldID cache
 src/game/game_state.*        client-state layer (client/player/options, fps, gamma, fov, sprint/sneak)
-src/game/game_combat.cpp     combat accessors: crosshair target, attack cooldown, nearest-target scan, vanilla attack path, offhand totem
+src/game/game_combat.cpp     combat accessors: crosshair target, attack cooldown, nearest-target scan, vanilla attack path, offhand totem, point/entity aim
+src/game/game_macro.cpp      macro accessors: interactItem use-click, isUsingItem probe, inventory slot scan, hotbar slot select
+src/game/game_visual.cpp     visual snapshots: player/storage scans (GameProfile names, storage kinds), world-to-screen projection
 src/modules/module.*         BaseModule lifecycle + registry + categories
-src/modules/builtin.*        built-ins: Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor, Auto Mace, Spear Lunge, HUD, Fullbright, Zoom, Sprint, Sneak
+src/modules/builtin.*        built-ins: Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor, Safe Anchor Macro, Shield Breaker, Pearl Catch, Auto Mace, Spear Lunge, HUD, Fullbright, Zoom, Sprint, Sneak, Player ESP, Storage ESP, Name Tags, Tracers
 src/ui/theme.*               macOS palette + geometry + ImGui style
 src/ui/animation.*           AnimationController (spring_value, animated_value, easing curves)
 src/ui/component.*           reusable ImGui widgets (traffic light, toggle, search field, ...)
@@ -267,7 +284,15 @@ AimAssist cone gate + bounded rotation step, the Auto Hit Crystal
 crystal-only scan, the Anchor Macro vanilla use-click (with and without the
 anchor held), the SafeAnchor low-health watchdog, the Auto Mace fall gate and
 the Spear Lunge velocity boost + cooldown, plus the self-attack guard and the
-ignore path for non-entity crosshair targets.
+ignore path for non-entity crosshair targets. The macro set runs against the
+fixture interaction manager and inventory: the Shield Breaker isUsingItem +
+axe gates, the Pearl Catch throw / rate-limit / wind-charge interception
+(hotbar slot selects + item uses + the aimed pitch), and the Safe Anchor Macro
+cycle (Glowstone slot select, shield place, anchor swap-back, Max Uses cap,
+no-Glowstone abort). The visual set asserts the ESP player scan (other players
+only, GameProfile names), the storage scan (chest + barrel matched, plain block
+entities skipped), the world-to-screen projection and a headless draw frame
+with all four overlay modules enabled.
 
 The GL renderer branch (`gl` mode) is only exercised against a real GLX context
 and is not covered by the headless suites.

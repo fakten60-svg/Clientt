@@ -6,7 +6,7 @@
 //       SimpleOption, Entity) onto a test classpath
 //    2. dlopen libwoke.so FIRST (constructor defers init), then create a JVM
 //       and call JNI_OnLoad -> full startup incl. module registry + config
-//    3. module registry: 18 built-ins across the Visual/Movement/Combat/
+//    3. module registry: 25 built-ins across the Visual/Movement/Combat/
 //       Mace/Spear categories, names/categories, category counts,
 //       unknown-name probes
 //    4. client-state layer against fixture objects wired through direct JNI:
@@ -138,6 +138,17 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_1792.java",
         "tests/fixtures/src/net/minecraft/class_1799.java",
         "tests/fixtures/src/net/minecraft/class_1802.java",
+        "tests/fixtures/src/net/minecraft/class_2382.java",
+        "tests/fixtures/src/net/minecraft/class_2338.java",
+        "tests/fixtures/src/net/minecraft/class_2586.java",
+        "tests/fixtures/src/net/minecraft/class_1684.java",
+        "tests/fixtures/src/net/minecraft/class_2595.java",
+        "tests/fixtures/src/net/minecraft/class_3719.java",
+        "tests/fixtures/src/net/minecraft/class_2627.java",
+        "tests/fixtures/src/net/minecraft/class_2614.java",
+        "tests/fixtures/src/net/minecraft/class_2609.java",
+        "tests/fixtures/src/net/minecraft/class_3722.java",
+        "tests/fixtures/src/com/mojang/authlib/GameProfile.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {
@@ -245,9 +256,19 @@ int main(int argc, char** argv) {
     auto f_tgt_hp = reinterpret_cast<float (*)()>(::dlsym(woke, "woke_game_target_health"));
     auto f_offhand_totem_probe = reinterpret_cast<int (*)()>(
         ::dlsym(woke, "woke_game_offhand_totem"));
+    auto f_esp_players = reinterpret_cast<int (*)()>(
+        ::dlsym(woke, "woke_game_esp_player_count"));
+    auto f_esp_name = reinterpret_cast<const char* (*)(int)>(
+        ::dlsym(woke, "woke_game_esp_player_name"));
+    auto f_esp_storage = reinterpret_cast<int (*)()>(
+        ::dlsym(woke, "woke_game_esp_storage_count"));
+    auto f_esp_project = reinterpret_cast<int (*)(double, double, double, double*, double*)>(
+        ::dlsym(woke, "woke_game_esp_project"));
 
-    check(f_cool != nullptr && f_tgt_hp != nullptr && f_offhand_totem_probe != nullptr,
-          "combat game-state exports resolve via dlsym");
+    check(f_cool != nullptr && f_tgt_hp != nullptr && f_offhand_totem_probe != nullptr &&
+              f_esp_players != nullptr && f_esp_name != nullptr &&
+              f_esp_storage != nullptr && f_esp_project != nullptr,
+          "combat + esp game-state exports resolve via dlsym");
     auto f_choice_label = reinterpret_cast<const char* (*)(const char*, const char*, int)>(
         ::dlsym(woke, "woke_module_setting_choice_label"));
     auto f_choice = reinterpret_cast<int (*)(const char*, const char*)>(
@@ -310,7 +331,7 @@ int main(int argc, char** argv) {
     check(f_imgui() == 1, "ImGui context created (ready for the click-gui)");
 
     // ---- 3) module registry -------------------------------------------------
-    check(f_mod_count() == 18, "module registry holds 18 built-in modules");
+    check(f_mod_count() == 25, "module registry holds 25 built-in modules");
     const char* n0 = f_mod_name(0);
     const char* n1 = f_mod_name(1);
     const char* n2 = f_mod_name(2);
@@ -329,8 +350,16 @@ int main(int argc, char** argv) {
     const char* n15 = f_mod_name(15);
     const char* n16 = f_mod_name(16);
     const char* n17 = f_mod_name(17);
+    const char* n18 = f_mod_name(18);
+    const char* n19 = f_mod_name(19);
+    const char* n20 = f_mod_name(20);
+    const char* n21 = f_mod_name(21);
+    const char* n22 = f_mod_name(22);
+    const char* n23 = f_mod_name(23);
+    const char* n24 = f_mod_name(24);
     check(n0 && n1 && n2 && n3 && n4 && n5 && n6 && n7 && n8 && n9 && n10 &&
-              n11 && n12 && n13 && n14 && n15 && n16 && n17 &&
+              n11 && n12 && n13 && n14 && n15 && n16 && n17 && n18 && n19 &&
+              n20 && n21 && n22 && n23 && n24 &&
               std::strcmp(n0, "HUD") == 0 && std::strcmp(n1, "Fullbright") == 0 &&
               std::strcmp(n2, "Zoom") == 0 && std::strcmp(n3, "Sprint") == 0 &&
               std::strcmp(n4, "Sneak") == 0 && std::strcmp(n5, "Target HUD") == 0 &&
@@ -343,13 +372,21 @@ int main(int argc, char** argv) {
               std::strcmp(n13, "Auto Hit Crystal") == 0 &&
               std::strcmp(n14, "Anchor Macro") == 0 &&
               std::strcmp(n15, "SafeAnchor") == 0 &&
-              std::strcmp(n16, "Auto Mace") == 0 &&
-              std::strcmp(n17, "Spear Lunge") == 0 &&
-              f_mod_name(18) == nullptr,
+              std::strcmp(n16, "Safe Anchor Macro") == 0 &&
+              std::strcmp(n17, "Shield Breaker") == 0 &&
+              std::strcmp(n18, "Pearl Catch") == 0 &&
+              std::strcmp(n19, "Auto Mace") == 0 &&
+              std::strcmp(n20, "Spear Lunge") == 0 &&
+              std::strcmp(n21, "Player ESP") == 0 &&
+              std::strcmp(n22, "Storage ESP") == 0 &&
+              std::strcmp(n23, "Name Tags") == 0 &&
+              std::strcmp(n24, "Tracers") == 0 &&
+              f_mod_name(25) == nullptr,
           "module names: HUD, Fullbright, Zoom, Sprint, Sneak, Target HUD, "
           "Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, "
           "Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor, "
-          "Auto Mace, Spear Lunge");
+          "Auto Mace, Spear Lunge, Safe Anchor Macro, Shield Breaker, "
+          "Pearl Catch, Player ESP, Storage ESP, Name Tags, Tracers");
     check(f_mod_cat(0) && f_mod_cat(3) && f_mod_cat(5) &&
               std::strcmp(f_mod_cat(0), "Visual") == 0 &&
               std::strcmp(f_mod_cat(3), "Movement") == 0 &&
@@ -358,10 +395,10 @@ int main(int argc, char** argv) {
     check(f_cat_total() == 6 && f_cat_at(0) && std::strcmp(f_cat_at(0), "Combat") == 0 &&
               std::strcmp(f_cat_at(5), "Visual") == 0,
           "the six spec categories are exposed in display order");
-    check(f_cat_count("Visual") == 3 && f_cat_count("Movement") == 2 &&
-              f_cat_count("Combat") == 11 && f_cat_count("Mace") == 1 &&
+    check(f_cat_count("Visual") == 7 && f_cat_count("Movement") == 2 &&
+              f_cat_count("Combat") == 14 && f_cat_count("Mace") == 1 &&
               f_cat_count("Misc") == 0 && f_cat_count("Spear") == 1,
-          "per-category module counts (Combat 11, Visual 3, Movement 2, "
+          "per-category module counts (Combat 14, Visual 7, Movement 2, "
           "Mace 1, Spear 1, Misc 0)");
     check(f_cat_enabled("Visual") == 0 && f_cat_enabled("Movement") == 0,
           "no module is enabled before any toggle (fresh config)");
@@ -461,7 +498,7 @@ int main(int argc, char** argv) {
     int toggles = 0;
     check(f_gui_draw(&modules_shown, &toggles) == 1, "headless click-gui frame rendered");
     check(std::strcmp(f_page(), "Visual") == 0, "dashboard opens on the Visual category page");
-    check(modules_shown == 3, "Visual page drew its 3 module cards");
+    check(modules_shown == 7, "Visual page drew its 7 module cards");
     check(f_gui_draws() >= 1, "gui draw counter advanced");
 
     check(f_select_page("Movement") == 1 && std::strcmp(f_page(), "Movement") == 0,
@@ -469,11 +506,11 @@ int main(int argc, char** argv) {
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 2,
           "Movement page drew its 2 module cards");
     check(f_select_page("Combat") == 1, "sidebar page switch to the Combat category");
-    // The card list is deliberately window-bounded: the headless frame fits a
-    // subset of the page before the draw pass clips at the window edge. The
-    // full 11 live in the registry (checked above via the category counts).
+    // The card list is deliberately window-bounded: the headless frame fits
+    // 7 cards before the draw pass clips at the window edge. The full 14
+    // live in the registry (checked above via the category counts).
     const int combat_drawn = f_gui_draw(&modules_shown, &toggles);
-    check(combat_drawn == 1 && modules_shown >= 6 && modules_shown <= 11,
+    check(combat_drawn == 1 && modules_shown >= 6 && modules_shown <= 14,
           "Combat page draws its visible module cards (window-bounded)");
     check(f_select_page("Mace") == 1, "sidebar page switch to the Mace category");
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 1,
@@ -498,8 +535,8 @@ int main(int argc, char** argv) {
     f_expand("Fullbright");
     check(std::strcmp(f_gui_expanded(), "Fullbright") == 0,
           "card expansion follows the chevron state");
-    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 3,
-          "expanded card keeps all Visual cards visible");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 6,
+          "expanded card keeps the page's cards visible (7 cards, one clipped by the panel)");
     f_gui_set(0);
 
     // ---- 7b) BaseSetting persistence ---------------------------------------
@@ -1089,6 +1126,351 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    // ---- 7d5) macro automations (Shield Breaker, Pearl Catch,
+                    // Safe Anchor Macro) -----------------------------------
+                    jclass cls1684 = env->FindClass("net/minecraft/class_1684");
+                    jclass cls2338 = env->FindClass("net/minecraft/class_2338");
+                    jclass cls2586 = env->FindClass("net/minecraft/class_2586");
+                    jclass cls2595 = env->FindClass("net/minecraft/class_2595");
+                    jclass cls3719 = env->FindClass("net/minecraft/class_3719");
+                    jmethodID ctor1684 =
+                        (cls1684 != nullptr) ? env->GetMethodID(cls1684, "<init>", "()V") : nullptr;
+                    jmethodID ctor2338 =
+                        (cls2338 != nullptr) ? env->GetMethodID(cls2338, "<init>", "(III)V") : nullptr;
+                    jmethodID ctor2586 =
+                        (cls2586 != nullptr) ? env->GetMethodID(cls2586, "<init>", "()V") : nullptr;
+                    jmethodID ctor2595 =
+                        (cls2595 != nullptr) ? env->GetMethodID(cls2595, "<init>", "()V") : nullptr;
+                    jmethodID ctor3719 =
+                        (cls3719 != nullptr) ? env->GetMethodID(cls3719, "<init>", "()V") : nullptr;
+                    jmethodID ctor1657 =
+                        (cls1657 != nullptr) ? env->GetMethodID(cls1657, "<init>", "()V") : nullptr;
+                    jmethodID add_block_entity =
+                        (cls638 != nullptr)
+                            ? env->GetMethodID(cls638, "addFixtureBlockEntity",
+                                               "(Lnet/minecraft/class_2586;)V")
+                            : nullptr;
+                    jfieldID fid_name =
+                        (cls1657 != nullptr)
+                            ? env->GetFieldID(cls1657, "field_name", "Ljava/lang/String;")
+                            : nullptr;
+                    jfieldID fid_using_item =
+                        (cls1309 != nullptr) ? env->GetFieldID(cls1309, "field_using_item", "Z")
+                                             : nullptr;
+                    jfieldID fid_main_arr =
+                        (cls1661 != nullptr)
+                            ? env->GetFieldID(cls1661, "field_main", "[Lnet/minecraft/class_1799;")
+                            : nullptr;
+                    jfieldID fid_selected =
+                        (cls1661 != nullptr) ? env->GetFieldID(cls1661, "field_7545", "I") : nullptr;
+                    jfieldID fid_pos =
+                        (cls2586 != nullptr)
+                            ? env->GetFieldID(cls2586, "field_pos", "Lnet/minecraft/class_2338;")
+                            : nullptr;
+                    jfieldID fid_glow_item =
+                        (cls1802 != nullptr)
+                            ? env->GetStaticFieldID(cls1802, "field_8801", "Lnet/minecraft/class_1792;")
+                            : nullptr;
+                    jfieldID fid_wind_item =
+                        (cls1802 != nullptr)
+                            ? env->GetStaticFieldID(cls1802, "field_49098", "Lnet/minecraft/class_1792;")
+                            : nullptr;
+                    jfieldID fid_pearl_item =
+                        (cls1802 != nullptr)
+                            ? env->GetStaticFieldID(cls1802, "field_8634", "Lnet/minecraft/class_1792;")
+                            : nullptr;
+                    jfieldID fid_axe_item =
+                        (cls1802 != nullptr)
+                            ? env->GetStaticFieldID(cls1802, "field_8556", "Lnet/minecraft/class_1792;")
+                            : nullptr;
+                    jfieldID fid_item_uses =
+                        (cls636 != nullptr) ? env->GetStaticFieldID(cls636, "itemUses", "I") : nullptr;
+                    check(ctor1684 != nullptr && ctor2338 != nullptr && ctor2586 != nullptr &&
+                              ctor2595 != nullptr && ctor3719 != nullptr && ctor1657 != nullptr &&
+                              add_block_entity != nullptr && fid_name != nullptr &&
+                              fid_using_item != nullptr && fid_main_arr != nullptr &&
+                              fid_selected != nullptr && fid_pos != nullptr &&
+                              fid_glow_item != nullptr && fid_wind_item != nullptr &&
+                              fid_pearl_item != nullptr && fid_axe_item != nullptr &&
+                              fid_item_uses != nullptr,
+                          "macro + visual fixture plumbing resolved");
+
+                    if (ctor1684 != nullptr && ctor1657 != nullptr &&
+                        add_block_entity != nullptr && fid_main_arr != nullptr &&
+                        fid_selected != nullptr && fid_item_uses != nullptr) {
+                        jobject inventory = env->GetObjectField(player_obj, fid_inventory);
+                        jobjectArray main_arr = (inventory != nullptr)
+                                                    ? static_cast<jobjectArray>(env->GetObjectField(
+                                                          inventory, fid_main_arr))
+                                                    : nullptr;
+                        auto inv_set = [&](int slot, jobject stack) {
+                            if (main_arr != nullptr) {
+                                env->SetObjectArrayElement(main_arr, slot, stack);
+                            }
+                        };
+                        auto item_uses_now = [&]() -> int {
+                            return (fid_item_uses != nullptr)
+                                       ? env->GetStaticIntField(cls636, fid_item_uses)
+                                       : 0;
+                        };
+                        auto selected_now = [&]() -> int {
+                            return (fid_selected != nullptr && inventory != nullptr)
+                                       ? env->GetIntField(inventory, fid_selected)
+                                       : -1;
+                        };
+
+                        // ---- Shield Breaker: isUsingItem gate + axe probe ----
+                        if (fid_using_item != nullptr && ctor3966 != nullptr &&
+                            fid_axe_item != nullptr && fid_cooldown != nullptr &&
+                            fid_main_hand != nullptr) {
+                            jobject sb_victim = env->NewObject(cls1309, ctor1309);
+                            if (sb_victim != nullptr) {
+                                jobject sb_hit = env->NewObject(cls3966, ctor3966, sb_victim);
+                                if (sb_hit != nullptr) {
+                                    env->SetBooleanField(sb_victim, fid_using_item, JNI_TRUE);
+                                    env->SetObjectField(client_ref, fid_1765, sb_hit);
+                                    env->SetFloatField(player_obj, fid_cooldown, 1.0f);
+                                    jobject axe_stack = item_stack(fid_axe_item);
+                                    if (axe_stack != nullptr) {
+                                        env->SetObjectField(player_obj, fid_main_hand, axe_stack);
+                                        f_put_dbl("Shield Breaker", "Cooldown", 100.0);
+                                        f_put_dbl("Shield Breaker", "Min Charge", 0.5);
+                                        const int before = attacks_now();
+                                        f_mod_set("Shield Breaker", 1);
+                                        f_tick();
+                                        check(attacks_now() == before + 1,
+                                              "Shield Breaker attacked the blocking target with an axe");
+                                        env->SetBooleanField(sb_victim, fid_using_item, JNI_FALSE);
+                                        reset_timer("Shield Breaker");
+                                        f_tick();
+                                        check(attacks_now() == before + 1,
+                                              "Shield Breaker holds fire while the target is not blocking");
+                                        env->SetBooleanField(sb_victim, fid_using_item, JNI_TRUE);
+                                        jobject totem_stack2 = item_stack(fid_totem);
+                                        if (totem_stack2 != nullptr) {
+                                            env->SetObjectField(player_obj, fid_main_hand,
+                                                                totem_stack2);
+                                            reset_timer("Shield Breaker");
+                                            f_tick();
+                                            check(attacks_now() == before + 1,
+                                                  "Shield Breaker requires an axe to break shields");
+                                            env->DeleteLocalRef(totem_stack2);
+                                        }
+                                        f_mod_set("Shield Breaker", 0);
+                                        env->SetObjectField(player_obj, fid_main_hand, nullptr);
+                                        env->DeleteLocalRef(axe_stack);
+                                    }
+                                    env->DeleteLocalRef(sb_hit);
+                                }
+                                env->DeleteLocalRef(sb_victim);
+                            }
+                        }
+
+                        // ---- Pearl Catch: throw + wind-charge interception ----
+                        if (fid_pearl_item != nullptr && fid_wind_item != nullptr) {
+                            f_put_dbl("Pearl Catch", "Cooldown", 100.0);
+                            f_put_dbl("Pearl Catch", "Fire Threshold", 45.0);
+                            f_put_dbl("Pearl Catch", "Max Step", 90.0);
+                            f_put_dbl("Pearl Catch", "Aim Strength", 1.0);
+                            jobject pearl_stack = item_stack(fid_pearl_item);
+                            jobject wind_stack = item_stack(fid_wind_item);
+                            if (pearl_stack != nullptr) {
+                                inv_set(1, pearl_stack);
+                                const int uses_before = item_uses_now();
+                                f_mod_set("Pearl Catch", 1);
+                                f_tick();   // no pearl in flight -> throw one
+                                check(selected_now() == 1 &&
+                                          item_uses_now() == uses_before + 1,
+                                      "Pearl Catch threw the pearl from its hotbar slot");
+                                f_tick();   // throw rate limit window
+                                check(item_uses_now() == uses_before + 1,
+                                      "Pearl Catch rate-limits the throws");
+                                if (wind_stack != nullptr && ctor1684 != nullptr) {
+                                    inv_set(2, wind_stack);
+                                    jobject pearl = env->NewObject(cls1684, ctor1684);
+                                    if (pearl != nullptr) {
+                                        env->SetDoubleField(pearl, fid_x, 0.0);
+                                        env->SetDoubleField(pearl, fid_y, 3.0);
+                                        env->SetDoubleField(pearl, fid_z, 4.0);
+                                        env->CallVoidMethod(world2, add_entity, pearl);
+                                        reset_timer("Pearl Catch");   // clear the throw cooldown
+                                        f_tick();   // pearl in flight -> aim + fire
+                                        check(selected_now() == 2 &&
+                                                  item_uses_now() == uses_before + 2,
+                                              "Pearl Catch fired the wind charge from its slot at the pearl");
+                                        check(env->GetFloatField(player_obj, fid_pitch) < -10.0f,
+                                              "Pearl Catch aimed the view up at the pearl (interception angle)");
+                                        inv_set(2, nullptr);   // wind charge gone
+                                        reset_timer("Pearl Catch");
+                                        f_tick();
+                                        check(item_uses_now() == uses_before + 2,
+                                              "Pearl Catch cannot catch without a wind charge");
+                                        f_mod_set("Pearl Catch", 0);
+                                        env->DeleteLocalRef(pearl);
+                                    }
+                                } else {
+                                    f_mod_set("Pearl Catch", 0);
+                                }
+                                inv_set(1, nullptr);
+                                env->DeleteLocalRef(pearl_stack);
+                            } else {
+                                f_mod_set("Pearl Catch", 0);
+                            }
+                            if (wind_stack != nullptr) {
+                                env->DeleteLocalRef(wind_stack);
+                            }
+                        }
+
+                        // ---- Safe Anchor Macro: Glowstone shield before the volley ----
+                        if (ctor3965 != nullptr && fid_glow_item != nullptr &&
+                            fid_anchor_item != nullptr && fid_main_hand != nullptr) {
+                            jobject anchor_stack = item_stack(fid_anchor_item);
+                            jobject glow_stack = item_stack(fid_glow_item);
+                            jobject block_hit = env->NewObject(cls3965, ctor3965);
+                            if (anchor_stack != nullptr && glow_stack != nullptr &&
+                                block_hit != nullptr) {
+                                env->SetObjectField(player_obj, fid_main_hand, anchor_stack);
+                                inv_set(0, anchor_stack);
+                                inv_set(1, glow_stack);
+                                env->SetObjectField(client_ref, fid_1765, block_hit);
+                                f_put_dbl("Safe Anchor Macro", "Place Delay", 50.0);
+                                f_put_dbl("Safe Anchor Macro", "Detonate Delay", 50.0);
+                                f_put_dbl("Safe Anchor Macro", "Use Rate", 20.0);
+                                f_put_dbl("Safe Anchor Macro", "Max Uses", 2.0);
+                                const int before = block_uses_now();
+                                f_mod_set("Safe Anchor Macro", 1);
+                                f_tick();   // idle -> select the Glowstone slot
+                                check(selected_now() == 1,
+                                      "Safe Anchor Macro selected the Glowstone slot first");
+                                f_tick();   // glow stage -> place the shield block
+                                check(block_uses_now() == before + 1,
+                                      "Safe Anchor Macro placed the Glowstone via the vanilla use-click");
+                                ::usleep(80 * 1000);
+                                f_tick();   // place delay elapsed -> swap back to the anchor
+                                check(selected_now() == 0,
+                                      "Safe Anchor Macro swapped back to the anchor slot");
+                                ::usleep(80 * 1000);
+                                f_tick();   // settle window elapsed -> detonate stage
+                                f_tick();   // detonation use #1
+                                ::usleep(80 * 1000);   // outlast the 20/s use-rate window
+                                f_tick();   // detonation use #2 -> Max Uses reached
+                                check(block_uses_now() == before + 3,
+                                      "Safe Anchor Macro capped the detonation volley at Max Uses");
+                                check(selected_now() == 0,
+                                      "Safe Anchor Macro left the anchor selected after the cycle");
+                                inv_set(1, nullptr);   // no Glowstone left
+                                reset_timer("Safe Anchor Macro");
+                                f_tick();
+                                check(block_uses_now() == before + 3,
+                                      "Safe Anchor Macro cannot cycle without Glowstone");
+                                f_mod_set("Safe Anchor Macro", 0);
+                                inv_set(0, nullptr);
+                                env->SetObjectField(player_obj, fid_main_hand, nullptr);
+                                env->DeleteLocalRef(glow_stack);
+                                env->DeleteLocalRef(anchor_stack);
+                                env->DeleteLocalRef(block_hit);
+                            } else {
+                                f_mod_set("Safe Anchor Macro", 0);
+                            }
+                        }
+
+                        // ---- 7d6) visual snapshots: ESP scans + projection -----
+                        if (ctor2595 != nullptr && ctor3719 != nullptr && ctor2338 != nullptr &&
+                            ctor2586 != nullptr && fid_pos != nullptr && fid_name != nullptr) {
+                            env->SetFloatField(player_obj, fid_yaw, 0.0f);
+                            env->SetFloatField(player_obj, fid_pitch, 0.0f);
+                            f_set_fov(70);
+                            jobject other = env->NewObject(cls1657, ctor1657);
+                            if (other != nullptr) {
+                                jstring name = env->NewStringUTF("OtherPlayer");
+                                if (name != nullptr) {
+                                    env->SetObjectField(other, fid_name, name);
+                                    env->DeleteLocalRef(name);
+                                }
+                                env->SetDoubleField(other, fid_x, 0.0);
+                                env->SetDoubleField(other, fid_y, 0.0);
+                                env->SetDoubleField(other, fid_z, 4.0);
+                                env->CallVoidMethod(world2, add_entity, other);
+                                check(f_esp_players() == 1,
+                                      "ESP scan sees exactly the other player (local excluded)");
+                                check(f_esp_name(0) != nullptr &&
+                                          std::strcmp(f_esp_name(0), "OtherPlayer") == 0,
+                                      "Name Tags read the other player's GameProfile name");
+                            }
+                            jobject pos = env->NewObject(cls2338, ctor2338, 2, 0, 2);
+                            jobject chest = env->NewObject(cls2595, ctor2595);
+                            if (pos != nullptr && chest != nullptr) {
+                                env->SetObjectField(chest, fid_pos, pos);
+                                env->CallVoidMethod(world2, add_block_entity, chest);
+                            }
+                            jobject pos2 = env->NewObject(cls2338, ctor2338, 3, 0, 2);
+                            jobject barrel = env->NewObject(cls3719, ctor3719);
+                            if (pos2 != nullptr && barrel != nullptr) {
+                                env->SetObjectField(barrel, fid_pos, pos2);
+                                env->CallVoidMethod(world2, add_block_entity, barrel);
+                            }
+                            jobject plain = env->NewObject(cls2586, ctor2586);
+                            jobject pos3 =
+                                (plain != nullptr) ? env->NewObject(cls2338, ctor2338, 4, 0, 2)
+                                                   : nullptr;
+                            if (plain != nullptr && pos3 != nullptr) {
+                                env->SetObjectField(plain, fid_pos, pos3);
+                                env->CallVoidMethod(world2, add_block_entity, plain);
+                            }
+                            check(f_esp_storage() == 2,
+                                  "Storage ESP matched chest + barrel and skipped the plain block entity");
+                            double sx = 0.0;
+                            double sy = 0.0;
+                            check(f_esp_project(0.0, 1.62, 5.0, &sx, &sy) == 1 &&
+                                      std::fabs(sx - 400.0) < 1.0 && std::fabs(sy - 300.0) < 1.0,
+                                  "ESP projection centers a straight-ahead point (800x600 reference)");
+                            check(f_esp_project(0.0, 1.62, -5.0, &sx, &sy) == 0,
+                                  "ESP projection rejects points behind the camera");
+                            check(f_esp_project(3.0, 1.62, 5.0, &sx, &sy) == 1 && sx > 400.0,
+                                  "ESP projection shifts off-center points to the correct side");
+                            // Render smoke test: snapshot in on_tick, draw in a
+                            // headless GUI frame (on_render path).
+                            f_mod_set("Player ESP", 1);
+                            f_mod_set("Storage ESP", 1);
+                            f_mod_set("Name Tags", 1);
+                            f_mod_set("Tracers", 1);
+                            f_tick();
+                            f_gui_set(1);
+                            int shown = 0;
+                            int tgl = 0;
+                            check(f_gui_draw(&shown, &tgl) == 1,
+                                  "world-overlay modules drew in a headless GUI frame");
+                            f_gui_set(0);
+                            f_mod_set("Player ESP", 0);
+                            f_mod_set("Storage ESP", 0);
+                            f_mod_set("Name Tags", 0);
+                            f_mod_set("Tracers", 0);
+                            if (pos != nullptr) {
+                                env->DeleteLocalRef(pos);
+                            }
+                            if (chest != nullptr) {
+                                env->DeleteLocalRef(chest);
+                            }
+                            if (pos2 != nullptr) {
+                                env->DeleteLocalRef(pos2);
+                            }
+                            if (barrel != nullptr) {
+                                env->DeleteLocalRef(barrel);
+                            }
+                            if (pos3 != nullptr) {
+                                env->DeleteLocalRef(pos3);
+                            }
+                            if (plain != nullptr) {
+                                env->DeleteLocalRef(plain);
+                            }
+                            if (other != nullptr) {
+                                env->DeleteLocalRef(other);
+                            }
+                        }
+
+                        env->DeleteLocalRef(inventory);
+                    }
+
                     env->SetObjectField(client_ref, fid_1765, nullptr);
                 }
                 env->DeleteLocalRef(world2);
@@ -1116,7 +1498,7 @@ int main(int argc, char** argv) {
     const std::string log = read_all("logs/latest.log");
     check(contains(log, "no JVM present in this process — deferred to JNI_OnLoad"),
           "log: constructor deferred init");
-    check(contains(log, "registered 18 built-in modules"), "log: built-in modules registered");
+    check(contains(log, "registered 25 built-in modules"), "log: built-in modules registered");
     check(contains(log, "Fullbright enabled"), "log: Fullbright enable recorded");
     check(contains(log, "Fullbright disabled"), "log: Fullbright disable recorded");
     check(contains(log, "click-gui opened"), "log: click-gui open recorded");

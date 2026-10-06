@@ -121,6 +121,17 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_1792.java",
         "tests/fixtures/src/net/minecraft/class_1799.java",
         "tests/fixtures/src/net/minecraft/class_1802.java",
+        "tests/fixtures/src/net/minecraft/class_2382.java",
+        "tests/fixtures/src/net/minecraft/class_2338.java",
+        "tests/fixtures/src/net/minecraft/class_2586.java",
+        "tests/fixtures/src/net/minecraft/class_1684.java",
+        "tests/fixtures/src/net/minecraft/class_2595.java",
+        "tests/fixtures/src/net/minecraft/class_3719.java",
+        "tests/fixtures/src/net/minecraft/class_2627.java",
+        "tests/fixtures/src/net/minecraft/class_2614.java",
+        "tests/fixtures/src/net/minecraft/class_2609.java",
+        "tests/fixtures/src/net/minecraft/class_3722.java",
+        "tests/fixtures/src/com/mojang/authlib/GameProfile.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {

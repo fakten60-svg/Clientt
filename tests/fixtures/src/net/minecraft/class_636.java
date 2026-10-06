@@ -6,6 +6,8 @@ package net.minecraft;
  *   method_2918 (L…/class_1657;L…/class_1297;)V                    = attackEntity(Player, Entity)
  *   method_2896 (L…/class_746;L…/class_1268;L…/class_3965;)L…/class_1269;
  *       = interactBlock(Player, Hand, BlockHitResult) -> ActionResult
+ *   method_2919 (L…/class_1657;L…/class_1268;)L…/class_1269;
+ *       = interactItem(Player, Hand) -> ActionResult
  */
 public class class_636 {
     /** Fixture-only attack counter (not a mapped member). */
@@ -13,6 +15,9 @@ public class class_636 {
 
     /** Fixture-only block-use counter (not a mapped member). */
     public static int blockUses = 0;
+
+    /** Fixture-only item-use counter (not a mapped member). */
+    public static int itemUses = 0;
 
     public static int attackCount() {
         return attacks;
@@ -27,6 +32,12 @@ public class class_636 {
     /** Vanilla use-click on a block; returns an ActionResult. */
     public class_1269 method_2896(class_746 player, class_1268 hand, class_3965 hit) {
         blockUses++;
+        return new class_1269();
+    }
+
+    /** Vanilla use-click on the held item (throw pearl / wind charge). */
+    public class_1269 method_2919(class_1657 player, class_1268 hand) {
+        itemUses++;
         return new class_1269();
     }
 }
