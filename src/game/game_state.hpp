@@ -117,6 +117,52 @@ public:
     // false when there is no totem to move or the handler path is absent.
     bool move_totem_to_offhand();
 
+    // ---- view rotation / motion (client-state) ------------------------------
+
+    // Reads the local player's view rotation through Entity#getYaw/#getPitch.
+    // false when the player graph is absent. Angles in degrees.
+    bool player_rotation(float& yaw, float& pitch);
+
+    // Aims the local view toward `target` — client-state only, the rotation
+    // lives in the local Entity exactly like mouse-look. Computes the needed
+    // yaw/pitch for the target's chest position, optionally applies ONE step
+    // of at most `max_step_deg` scaled by `gain` (fraction of the remaining
+    // delta), and reports the full angular delta (deg) BEFORE the step via
+    // `delta_deg` so callers can gate on an FOV cone. Never snaps: the caller
+    // chooses the per-tick budget. false when handles/positions are absent.
+    bool aim_angle_to(jobject target, double max_step_deg, double gain, bool apply,
+                      double& delta_deg);
+
+    // Entity.fallDistance on the local player; -1.0 when absent.
+    double player_fall_distance();
+
+    // LivingEntity.getHealth() on the local player; -1.0f when absent.
+    float player_health();
+
+    // Entity.setVelocity(x, y, z) — the vanilla movement-state write (the
+    // same call knockback and elytra boosts use). Client state only.
+    bool boost_player(double vx, double vy, double vz);
+
+    // True when the main hand currently holds the Items.<field> item named by
+    // `items_field_yarn` (e.g. "MACE", "RESPAWN_ANCHOR", "TRIDENT"). Reads
+    // LivingEntity.getMainHandStack().isOf(Items.<field>).
+    bool main_hand_item_is(const char* items_field_yarn);
+
+    // The vanilla use-click on the block under the crosshair:
+    // interactionManager.interactBlock(player, MAIN_HAND, blockHitResult) —
+    // the same call a right-click performs (place / charge / detonate is
+    // decided by the game itself). false when the crosshair is not on a
+    // BlockHitResult or the path is absent.
+    bool client_use_block();
+
+    // ---- combat target acquisition (Auto Hit Crystal) -----------------------
+
+    // Same scan as nearest_combat_target(), but only entities that are
+    // instances of the End Crystal class qualify (crystals are not living,
+    // so `out.living` stays false and no health is read).
+    bool nearest_crystal_target(float max_distance, combat_target_info& out,
+                                char* name_buf, std::size_t cap);
+
 private:
     game_state() = default;
 
@@ -128,6 +174,12 @@ private:
     jobject crosshair_target_object(JNIEnv* env);
     jobject interaction_manager_object(JNIEnv* env);
     jobject world_object(JNIEnv* env);
+    // Shared entity-list scan behind nearest_combat_target() and
+    // nearest_crystal_target(): picks the nearest, alive, non-self Entity
+    // within reach; when `only_class_yarn` is non-null, only instances of
+    // that yarn class qualify.
+    bool scan_nearest_entity(float max_distance, const char* only_class_yarn,
+                             combat_target_info& out, char* name_buf, std::size_t cap);
     void release_bridge(JNIEnv* env);
 
     mutable std::mutex mutex_;

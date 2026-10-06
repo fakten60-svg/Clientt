@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <utility>
+#include <vector>
 
 #include "core/event_bus.hpp"
 #include "core/logger.hpp"
@@ -100,11 +101,22 @@ bool module_registry::set_enabled(const std::string& name, bool on) {
 }
 
 void module_registry::tick_all(game::game_state& gs) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& m : modules_) {
-        if (m->enabled()) {
-            m->on_tick(gs);
+    // Snapshot under the lock, tick OUTSIDE of it: a module's on_tick may
+    // itself call registry APIs (SafeAnchor toggles Anchor Macro off at low
+    // health) — the mutex is not recursive, so holding it across the tick
+    // pass would deadlock on the first re-entrant lookup.
+    std::vector<module*> enabled;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        enabled.reserve(modules_.size());
+        for (const auto& m : modules_) {
+            if (m->enabled()) {
+                enabled.push_back(m.get());
+            }
         }
+    }
+    for (module* m : enabled) {
+        m->on_tick(gs);
     }
 }
 

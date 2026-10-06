@@ -16,13 +16,26 @@
 //    * offhand_totem()            — reads PlayerInventory.OFF_HAND_SLOT
 //    * move_totem_to_offhand()    — swaps a totem into the offhand through
 //                                   the vanilla clickSlot(SWAP) exchange
+//    * scan_nearest_entity()      — shared world-scan core; the public
+//                                   nearest_combat_target() and
+//                                   nearest_crystal_target() wrappers feed
+//                                   KillAura and Auto Hit Crystal
+//    * player_rotation() /        — the local view rotation read + the
+//      aim_angle_to()             bounded aim step (AimAssist)
+//    * player_fall_distance()     — Entity.fallDistance (Auto Mace)
+//    * player_health()            — LivingEntity.getHealth (SafeAnchor)
+//    * boost_player()             — Entity.setVelocity (Spear Lunge)
+//    * main_hand_item_is()        — held-item probe (Anchor Macro, Auto Mace)
+//    * client_use_block()         — vanilla interactBlock use-click
+//                                   (Anchor Macro)
 //
-//  There is no aim assist and no packet generation here: the client itself
-//  decides what "under the crosshair" means, attacks travel through the
-//  vanilla interaction manager like every normal click, and the Auto Totem
-//  swap reuses the vanilla inventory click. All handles come from the
-//  reflection cache (static JNI caching).
+//  No packet generation here: attacks, block uses and the totem swap travel
+//  through the vanilla interaction manager exactly like real clicks, and the
+//  rotation/velocity writes are plain local Entity state. All handles come
+//  from the reflection cache (static JNI caching).
 // ============================================================================
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -41,7 +54,10 @@ namespace {
 
 // Yarn keys — resolved to intermediary handles through the reflection cache.
 constexpr const char* kMinecraftClient  = "net/minecraft/client/MinecraftClient";
+constexpr const char* kEntity           = "net/minecraft/entity/Entity";
 constexpr const char* kLivingEntity     = "net/minecraft/entity/LivingEntity";
+constexpr const char* kEndCrystal       = "net/minecraft/entity/decoration/EndCrystalEntity";
+constexpr const char* kBlockHitResult   = "net/minecraft/util/hit/BlockHitResult";
 constexpr const char* kPlayerEntity     = "net/minecraft/entity/player/PlayerEntity";
 constexpr const char* kEntityType       = "net/minecraft/entity/EntityType";
 constexpr const char* kEntityHitResult  = "net/minecraft/util/hit/EntityHitResult";
@@ -61,6 +77,15 @@ const std::string kSwingHandDesc = "(Lnet/minecraft/class_1268;)V";
 // (method_5858). The three-double and Vec3d overloads share the yarn name, so
 // the cache would otherwise resolve the first mapped overload.
 const std::string kSquaredDistanceEntityDesc = "(Lnet/minecraft/class_1297;)D";
+// getYaw/getPitch each map two overloads; the ()F pair is the raw rotation.
+const std::string kZeroFloatDesc  = "()F";
+const std::string kZeroDoubleDesc = "()D";
+const std::string kFloatVoidDesc  = "(F)V";
+// setVelocity(double,double,double) — the primitive overload (no Vec3d).
+const std::string kThreeDoubleVoidDesc = "(DDD)V";
+const std::string kGetMainHandDesc = "()Lnet/minecraft/class_1799;";
+const std::string kInteractBlockDesc =
+    "(Lnet/minecraft/class_746;Lnet/minecraft/class_1268;Lnet/minecraft/class_3965;)Lnet/minecraft/class_1269;";
 
 } // namespace
 
@@ -307,6 +332,17 @@ jobject game_state::world_object(JNIEnv* env) {
 
 bool game_state::nearest_combat_target(float max_distance, combat_target_info& out,
                                        char* name_buf, std::size_t cap) {
+    return scan_nearest_entity(max_distance, nullptr, out, name_buf, cap);
+}
+
+bool game_state::nearest_crystal_target(float max_distance, combat_target_info& out,
+                                        char* name_buf, std::size_t cap) {
+    return scan_nearest_entity(max_distance, kEndCrystal, out, name_buf, cap);
+}
+
+bool game_state::scan_nearest_entity(float max_distance, const char* only_class_yarn,
+                                     combat_target_info& out, char* name_buf,
+                                     std::size_t cap) {
     out = combat_target_info{};
     if (name_buf != nullptr && cap > 0) {
         name_buf[0] = '\0';
@@ -332,7 +368,9 @@ bool game_state::nearest_combat_target(float max_distance, combat_target_info& o
         return false;
     }
     const jclass iterable_cls = env->FindClass("java/lang/Iterable");
-    const jclass entity_cls = cache.find_class("net/minecraft/entity/Entity");
+    const jclass entity_cls = cache.find_class(kEntity);
+    const jclass only_cls =
+        (only_class_yarn != nullptr) ? cache.find_class(only_class_yarn) : nullptr;
     const jclass living_cls = cache.find_class(kLivingEntity);
     const jmethodID iterator_mid =
         (iterable_cls != nullptr) ? env->GetMethodID(iterable_cls, "iterator", "()Ljava/util/Iterator;")
@@ -350,17 +388,16 @@ bool game_state::nearest_combat_target(float max_distance, combat_target_info& o
     const jmethodID next =
         (iterator_cls != nullptr) ? env->GetMethodID(iterator_cls, "next", "()Ljava/lang/Object;")
                                   : nullptr;
-    const jmethodID is_alive = cache.find_method("net/minecraft/entity/Entity", "isAlive", nullptr);
+    const jmethodID is_alive = cache.find_method(kEntity, "isAlive", nullptr);
     const jmethodID squared_to_entity =
-        cache.find_method("net/minecraft/entity/Entity", "squaredDistanceTo",
-                          &kSquaredDistanceEntityDesc);
+        cache.find_method(kEntity, "squaredDistanceTo", &kSquaredDistanceEntityDesc);
     const jmethodID get_health = cache.find_method(kLivingEntity, "getHealth", nullptr);
     const jmethodID get_max = cache.find_method(kLivingEntity, "getMaxHealth", nullptr);
-    const jmethodID get_type = cache.find_method("net/minecraft/entity/Entity", "getType", nullptr);
+    const jmethodID get_type = cache.find_method(kEntity, "getType", nullptr);
     const jmethodID get_name = cache.find_method(kEntityType, "getUntranslatedName", nullptr);
 
     if (has_next == nullptr || next == nullptr || squared_to_entity == nullptr ||
-        is_alive == nullptr) {
+        is_alive == nullptr || (only_class_yarn != nullptr && only_cls == nullptr)) {
         clear_exception(env);
         env->DeleteLocalRef(it);
         env->DeleteLocalRef(iterable);
@@ -382,6 +419,11 @@ bool game_state::nearest_combat_target(float max_distance, combat_target_info& o
         }
         if (env->IsSameObject(player, e) == JNI_TRUE ||
             env->IsInstanceOf(e, entity_cls) != JNI_TRUE) {
+            clear_exception(env);
+            env->DeleteLocalRef(e);
+            continue;
+        }
+        if (only_cls != nullptr && env->IsInstanceOf(e, only_cls) != JNI_TRUE) {
             clear_exception(env);
             env->DeleteLocalRef(e);
             continue;
@@ -631,6 +673,241 @@ bool game_state::offhand_totem() {
     }
     env->DeleteLocalRef(inventory);
     return is_totem;
+}
+
+// ----------------------------------------------------------------------------
+// View rotation / motion — plain local Entity state, the same storage the
+// mouse-look and knockback code paths use.
+// ----------------------------------------------------------------------------
+
+bool game_state::player_rotation(float& yaw, float& pitch) {
+    yaw = 0.0f;
+    pitch = 0.0f;
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    auto& cache = jni::reflection_cache::instance();
+    const jmethodID get_yaw = cache.find_method(kEntity, "getYaw", &kZeroFloatDesc);
+    const jmethodID get_pitch = cache.find_method(kEntity, "getPitch", &kZeroFloatDesc);
+    jobject player = player_object(env);
+    if (get_yaw == nullptr || get_pitch == nullptr || player == nullptr) {
+        return false;
+    }
+    yaw = env->CallFloatMethod(player, get_yaw);
+    clear_exception(env);
+    pitch = env->CallFloatMethod(player, get_pitch);
+    clear_exception(env);
+    return true;
+}
+
+bool game_state::aim_angle_to(jobject target, double max_step_deg, double gain, bool apply,
+                              double& delta_deg) {
+    delta_deg = 0.0;
+    JNIEnv* env = this->env();
+    if (env == nullptr || target == nullptr || max_step_deg <= 0.0) {
+        return false;
+    }
+    auto& cache = jni::reflection_cache::instance();
+
+    const jmethodID get_x = cache.find_method(kEntity, "getX", &kZeroDoubleDesc);
+    const jmethodID get_y = cache.find_method(kEntity, "getY", &kZeroDoubleDesc);
+    const jmethodID get_z = cache.find_method(kEntity, "getZ", &kZeroDoubleDesc);
+    const jmethodID get_eye_y = cache.find_method(kEntity, "getEyeY", &kZeroDoubleDesc);
+    const jmethodID get_yaw = cache.find_method(kEntity, "getYaw", &kZeroFloatDesc);
+    const jmethodID get_pitch = cache.find_method(kEntity, "getPitch", &kZeroFloatDesc);
+    const jmethodID set_yaw = cache.find_method(kEntity, "setYaw", &kFloatVoidDesc);
+    const jmethodID set_pitch = cache.find_method(kEntity, "setPitch", &kFloatVoidDesc);
+    jobject player = player_object(env);
+    if (get_x == nullptr || get_y == nullptr || get_z == nullptr || get_eye_y == nullptr ||
+        get_yaw == nullptr || get_pitch == nullptr || set_yaw == nullptr ||
+        set_pitch == nullptr || player == nullptr) {
+        return false;
+    }
+
+    const double px = env->CallDoubleMethod(player, get_x);
+    clear_exception(env);
+    const double pz = env->CallDoubleMethod(player, get_z);
+    clear_exception(env);
+    const double eye_y = env->CallDoubleMethod(player, get_eye_y);
+    clear_exception(env);
+    const double tx = env->CallDoubleMethod(target, get_x);
+    clear_exception(env);
+    const double ty = env->CallDoubleMethod(target, get_y) + 1.0;   // chest height
+    clear_exception(env);
+    const double tz = env->CallDoubleMethod(target, get_z);
+    clear_exception(env);
+    const float cur_yaw_f = env->CallFloatMethod(player, get_yaw);
+    clear_exception(env);
+    const float cur_pitch_f = env->CallFloatMethod(player, get_pitch);
+    clear_exception(env);
+
+    // Minecraft look angles: yaw = atan2(-dx, dz), pitch = -atan2(dy, horiz).
+    const double dx = tx - px;
+    const double dy = ty - eye_y;
+    const double dz = tz - pz;
+    const double horizontal = std::sqrt(dx * dx + dz * dz);
+    constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+    const double yaw_needed = std::atan2(-dx, dz) * kRadToDeg;
+    const double pitch_needed = -std::atan2(dy, horizontal) * kRadToDeg;
+
+    const double cur_yaw = static_cast<double>(cur_yaw_f);
+    const double cur_pitch = static_cast<double>(cur_pitch_f);
+    double yaw_delta = yaw_needed - cur_yaw;
+    // Wrap into [-180, 180) so the aim takes the short way around.
+    yaw_delta = std::fmod(yaw_delta + 180.0, 360.0);
+    if (yaw_delta < 0.0) {
+        yaw_delta += 360.0;
+    }
+    yaw_delta -= 180.0;
+    const double pitch_delta = pitch_needed - cur_pitch;
+
+    delta_deg = std::sqrt(yaw_delta * yaw_delta + pitch_delta * pitch_delta);
+    if (!apply) {
+        return true;
+    }
+
+    const double step_yaw = std::clamp(yaw_delta * gain, -max_step_deg, max_step_deg);
+    const double step_pitch = std::clamp(pitch_delta * gain, -max_step_deg, max_step_deg);
+    // The math is double; JNI varargs receives it as-is (same pattern as the
+    // getAttackCooldownProgress call above).
+    env->CallVoidMethod(player, set_yaw, cur_yaw + step_yaw);
+    clear_exception(env);
+    env->CallVoidMethod(player, set_pitch, cur_pitch + step_pitch);
+    clear_exception(env);
+    return true;
+}
+
+double game_state::player_fall_distance() {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return -1.0;
+    }
+    const jfieldID fid =
+        jni::reflection_cache::instance().find_field(kEntity, "fallDistance", nullptr);
+    jobject player = player_object(env);
+    if (fid == nullptr || player == nullptr) {
+        return -1.0;
+    }
+    const jdouble value = env->GetDoubleField(player, fid);
+    clear_exception(env);
+    return value;
+}
+
+float game_state::player_health() {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return -1.0f;
+    }
+    const jmethodID mid =
+        jni::reflection_cache::instance().find_method(kLivingEntity, "getHealth", nullptr);
+    jobject player = player_object(env);
+    if (mid == nullptr || player == nullptr) {
+        return -1.0f;
+    }
+    const jfloat value = env->CallFloatMethod(player, mid);
+    clear_exception(env);
+    return value;
+}
+
+bool game_state::boost_player(double vx, double vy, double vz) {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    const jmethodID mid =
+        jni::reflection_cache::instance().find_method(kEntity, "setVelocity",
+                                                      &kThreeDoubleVoidDesc);
+    jobject player = player_object(env);
+    if (mid == nullptr || player == nullptr) {
+        return false;
+    }
+    env->CallVoidMethod(player, mid, vx, vy, vz);
+    clear_exception(env);
+    return true;
+}
+
+bool game_state::main_hand_item_is(const char* items_field_yarn) {
+    if (items_field_yarn == nullptr || items_field_yarn[0] == '\0') {
+        return false;
+    }
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    auto& cache = jni::reflection_cache::instance();
+    const jmethodID get_main = cache.find_method(kLivingEntity, "getMainHandStack", &kGetMainHandDesc);
+    const jmethodID is_of = cache.find_method(kItemStack, "isOf", nullptr);
+    const jfieldID item_fid = cache.find_field(kItems, items_field_yarn, nullptr);
+    jclass items_cls = cache.find_class(kItems);
+    jobject player = player_object(env);
+    if (get_main == nullptr || is_of == nullptr || item_fid == nullptr ||
+        items_cls == nullptr || player == nullptr) {
+        return false;
+    }
+    jobject stack = env->CallObjectMethod(player, get_main);
+    clear_exception(env);
+    if (stack == nullptr) {
+        return false;
+    }
+    jobject item = env->GetStaticObjectField(items_cls, item_fid);
+    clear_exception(env);
+    bool match = false;
+    if (item != nullptr) {
+        match = env->CallBooleanMethod(stack, is_of, item) == JNI_TRUE;
+        clear_exception(env);
+        env->DeleteLocalRef(item);
+    }
+    env->DeleteLocalRef(stack);
+    return match;
+}
+
+bool game_state::client_use_block() {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    auto& cache = jni::reflection_cache::instance();
+
+    const jmethodID interact_block =
+        cache.find_method(kInteractionMgr, "interactBlock", &kInteractBlockDesc);
+    jclass blockhit_cls = cache.find_class(kBlockHitResult);
+    const jfieldID main_hand = cache.find_field(kHand, "MAIN_HAND", nullptr);
+    jclass hand_cls = cache.find_class(kHand);
+    jobject manager = interaction_manager_object(env);
+    jobject player = player_object(env);
+    if (interact_block == nullptr || blockhit_cls == nullptr || main_hand == nullptr ||
+        hand_cls == nullptr || manager == nullptr || player == nullptr) {
+        return false;
+    }
+
+    // The crosshair raycast must be a BLOCK hit (like a right-click on a face).
+    jobject hit = crosshair_target_object(env);
+    if (hit == nullptr) {
+        return false;
+    }
+    if (env->IsInstanceOf(hit, blockhit_cls) != JNI_TRUE) {
+        clear_exception(env);
+        env->DeleteLocalRef(hit);
+        return false;
+    }
+    jobject hand = env->GetStaticObjectField(hand_cls, main_hand);
+    clear_exception(env);
+    if (hand == nullptr) {
+        env->DeleteLocalRef(hit);
+        return false;
+    }
+
+    // The vanilla use-click — whether it places, charges or detonates is the
+    // game's own decision; we only repeat the right-click itself.
+    jobject result = env->CallObjectMethod(manager, interact_block, player, hand, hit);
+    clear_exception(env);
+    if (result != nullptr) {
+        env->DeleteLocalRef(result);
+    }
+    env->DeleteLocalRef(hand);
+    env->DeleteLocalRef(hit);
+    return true;
 }
 
 } // namespace woke::game

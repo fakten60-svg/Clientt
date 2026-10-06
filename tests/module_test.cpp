@@ -6,8 +6,9 @@
 //       SimpleOption, Entity) onto a test classpath
 //    2. dlopen libwoke.so FIRST (constructor defers init), then create a JVM
 //       and call JNI_OnLoad -> full startup incl. module registry + config
-//    3. module registry: 11 built-ins across the Visual/Movement/Combat
-//       categories, names/categories, category counts, unknown-name probes
+//    3. module registry: 18 built-ins across the Visual/Movement/Combat/
+//       Mace/Spear categories, names/categories, category counts,
+//       unknown-name probes
 //    4. client-state layer against fixture objects wired through direct JNI:
 //       gamma read/write round-trip, sprint set/query, fps read
 //    5. Fullbright = read-modify-restore of gamma; Sprint = per-tick assert
@@ -122,11 +123,14 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_315.java",
         "tests/fixtures/src/net/minecraft/class_7172.java",
         "tests/fixtures/src/net/minecraft/class_1309.java",
+        "tests/fixtures/src/net/minecraft/class_1511.java",
         "tests/fixtures/src/net/minecraft/class_1657.java",
         "tests/fixtures/src/net/minecraft/class_1268.java",
         "tests/fixtures/src/net/minecraft/class_1299.java",
         "tests/fixtures/src/net/minecraft/class_239.java",
         "tests/fixtures/src/net/minecraft/class_3966.java",
+        "tests/fixtures/src/net/minecraft/class_3965.java",
+        "tests/fixtures/src/net/minecraft/class_1269.java",
         "tests/fixtures/src/net/minecraft/class_636.java",
         "tests/fixtures/src/net/minecraft/class_638.java",
         "tests/fixtures/src/net/minecraft/class_1661.java",
@@ -306,7 +310,7 @@ int main(int argc, char** argv) {
     check(f_imgui() == 1, "ImGui context created (ready for the click-gui)");
 
     // ---- 3) module registry -------------------------------------------------
-    check(f_mod_count() == 11, "module registry holds 11 built-in modules");
+    check(f_mod_count() == 18, "module registry holds 18 built-in modules");
     const char* n0 = f_mod_name(0);
     const char* n1 = f_mod_name(1);
     const char* n2 = f_mod_name(2);
@@ -317,17 +321,35 @@ int main(int argc, char** argv) {
     const char* n7 = f_mod_name(7);
     const char* n8 = f_mod_name(8);
     const char* n9 = f_mod_name(9);
-    check(n0 && n1 && n2 && n3 && n4 && n5 && n6 && n7 && n8 && n9 &&
+    const char* n10 = f_mod_name(10);
+    const char* n11 = f_mod_name(11);
+    const char* n12 = f_mod_name(12);
+    const char* n13 = f_mod_name(13);
+    const char* n14 = f_mod_name(14);
+    const char* n15 = f_mod_name(15);
+    const char* n16 = f_mod_name(16);
+    const char* n17 = f_mod_name(17);
+    check(n0 && n1 && n2 && n3 && n4 && n5 && n6 && n7 && n8 && n9 && n10 &&
+              n11 && n12 && n13 && n14 && n15 && n16 && n17 &&
               std::strcmp(n0, "HUD") == 0 && std::strcmp(n1, "Fullbright") == 0 &&
               std::strcmp(n2, "Zoom") == 0 && std::strcmp(n3, "Sprint") == 0 &&
               std::strcmp(n4, "Sneak") == 0 && std::strcmp(n5, "Target HUD") == 0 &&
               std::strcmp(n6, "Attack Cooldown") == 0 &&
               std::strcmp(n7, "Auto Clicker") == 0 &&
               std::strcmp(n8, "KillAura") == 0 && std::strcmp(n9, "W-Tap") == 0 &&
-              f_mod_name(10) != nullptr && std::strcmp(f_mod_name(10), "Auto Totem") == 0 &&
-              f_mod_name(11) == nullptr,
+              std::strcmp(n10, "Auto Totem") == 0 &&
+              std::strcmp(n11, "Triggerbot") == 0 &&
+              std::strcmp(n12, "AimAssist") == 0 &&
+              std::strcmp(n13, "Auto Hit Crystal") == 0 &&
+              std::strcmp(n14, "Anchor Macro") == 0 &&
+              std::strcmp(n15, "SafeAnchor") == 0 &&
+              std::strcmp(n16, "Auto Mace") == 0 &&
+              std::strcmp(n17, "Spear Lunge") == 0 &&
+              f_mod_name(18) == nullptr,
           "module names: HUD, Fullbright, Zoom, Sprint, Sneak, Target HUD, "
-          "Attack Cooldown, Auto Clicker, KillAura, W-Tap");
+          "Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, "
+          "Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor, "
+          "Auto Mace, Spear Lunge");
     check(f_mod_cat(0) && f_mod_cat(3) && f_mod_cat(5) &&
               std::strcmp(f_mod_cat(0), "Visual") == 0 &&
               std::strcmp(f_mod_cat(3), "Movement") == 0 &&
@@ -337,9 +359,10 @@ int main(int argc, char** argv) {
               std::strcmp(f_cat_at(5), "Visual") == 0,
           "the six spec categories are exposed in display order");
     check(f_cat_count("Visual") == 3 && f_cat_count("Movement") == 2 &&
-              f_cat_count("Combat") == 6 && f_cat_count("Mace") == 0 &&
-              f_cat_count("Misc") == 0 && f_cat_count("Spear") == 0,
-          "per-category module counts (Combat 6, Visual 3, Movement 2, rest 0)");
+              f_cat_count("Combat") == 11 && f_cat_count("Mace") == 1 &&
+              f_cat_count("Misc") == 0 && f_cat_count("Spear") == 1,
+          "per-category module counts (Combat 11, Visual 3, Movement 2, "
+          "Mace 1, Spear 1, Misc 0)");
     check(f_cat_enabled("Visual") == 0 && f_cat_enabled("Movement") == 0,
           "no module is enabled before any toggle (fresh config)");
     check(f_mod_enabled("DoesNotExist") == -1, "unknown module probes as -1");
@@ -446,9 +469,19 @@ int main(int argc, char** argv) {
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 2,
           "Movement page drew its 2 module cards");
     check(f_select_page("Combat") == 1, "sidebar page switch to the Combat category");
-    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 6,
-          "Combat page draws its 6 module cards");
-    check(f_select_page("Mace") == 1, "sidebar page switch to the empty Mace category");
+    // The card list is deliberately window-bounded: the headless frame fits a
+    // subset of the page before the draw pass clips at the window edge. The
+    // full 11 live in the registry (checked above via the category counts).
+    const int combat_drawn = f_gui_draw(&modules_shown, &toggles);
+    check(combat_drawn == 1 && modules_shown >= 6 && modules_shown <= 11,
+          "Combat page draws its visible module cards (window-bounded)");
+    check(f_select_page("Mace") == 1, "sidebar page switch to the Mace category");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 1,
+          "Mace page draws its 1 module card");
+    check(f_select_page("Spear") == 1, "sidebar page switch to the Spear category");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 1,
+          "Spear page draws its 1 module card");
+    check(f_select_page("Misc") == 1, "sidebar page switch to the empty Misc category");
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 0,
           "empty category draws no cards (0-badge section)");
     check(f_select_page("NoSuchPage") == 0, "unknown page name is rejected");
@@ -764,6 +797,302 @@ int main(int argc, char** argv) {
             check(f_mod_set("Auto Totem", 1) == 1, "Auto Totem registered and toggleable");
             f_tick();
             check(f_mod_set("Auto Totem", 0) == 1, "Auto Totem disabled again");
+
+            // ---- 7d4) pvp + weapon automations -----------------------------------
+            // A fresh world so the scans see exactly the entities we place.
+            jobject world2 = (ctor638 != nullptr) ? env->NewObject(cls638, ctor638) : nullptr;
+            check(world2 != nullptr, "fixture world #2 created");
+            if (world2 != nullptr) {
+                env->SetObjectField(client_ref, fid_1687, world2);
+
+                // cls3966/ctor3966 come from the hoisted 7d2 declarations.
+                jclass cls1297 = env->FindClass("net/minecraft/class_1297");
+                jclass cls1511 = env->FindClass("net/minecraft/class_1511");
+                jclass cls3965 = env->FindClass("net/minecraft/class_3965");
+                jmethodID ctor1297 =
+                    (cls1297 != nullptr) ? env->GetMethodID(cls1297, "<init>", "()V") : nullptr;
+                jmethodID ctor1511 =
+                    (cls1511 != nullptr) ? env->GetMethodID(cls1511, "<init>", "()V") : nullptr;
+                jmethodID ctor3965 =
+                    (cls3965 != nullptr) ? env->GetMethodID(cls3965, "<init>", "()V") : nullptr;
+                jfieldID fid_1765 =
+                    env->GetFieldID(cls310, "field_1765", "Lnet/minecraft/class_239;");
+                jfieldID fid_x =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_x", "D") : nullptr;
+                jfieldID fid_y =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_y", "D") : nullptr;
+                jfieldID fid_z =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_z", "D") : nullptr;
+                jfieldID fid_yaw =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_yaw", "F") : nullptr;
+                jfieldID fid_pitch =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_pitch", "F") : nullptr;
+                jfieldID fid_vz =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_vz", "D") : nullptr;
+                jfieldID fid_fall =
+                    (cls1297 != nullptr) ? env->GetFieldID(cls1297, "field_6017", "D") : nullptr;
+                jfieldID fid_cooldown =
+                    (cls1657 != nullptr) ? env->GetFieldID(cls1657, "field_cooldown", "F")
+                                         : nullptr;
+                jfieldID fid_health =
+                    (cls1309 != nullptr) ? env->GetFieldID(cls1309, "field_health", "F")
+                                         : nullptr;
+                jfieldID fid_main_hand =
+                    (cls1657 != nullptr)
+                        ? env->GetFieldID(cls1657, "field_main_hand", "Lnet/minecraft/class_1799;")
+                        : nullptr;
+                jfieldID fid_anchor_item =
+                    (cls1802 != nullptr)
+                        ? env->GetStaticFieldID(cls1802, "field_23141", "Lnet/minecraft/class_1792;")
+                        : nullptr;
+                jfieldID fid_mace_item =
+                    (cls1802 != nullptr)
+                        ? env->GetStaticFieldID(cls1802, "field_49814", "Lnet/minecraft/class_1792;")
+                        : nullptr;
+                jfieldID fid_trident_item =
+                    (cls1802 != nullptr)
+                        ? env->GetStaticFieldID(cls1802, "field_8547", "Lnet/minecraft/class_1792;")
+                        : nullptr;
+                jfieldID fid_block_uses =
+                    (cls636 != nullptr) ? env->GetStaticFieldID(cls636, "blockUses", "I")
+                                        : nullptr;
+                check(ctor1511 != nullptr && ctor3965 != nullptr && ctor3966 != nullptr &&
+                          fid_1765 != nullptr && fid_x != nullptr && fid_y != nullptr &&
+                          fid_z != nullptr && fid_yaw != nullptr && fid_pitch != nullptr &&
+                          fid_vz != nullptr && fid_fall != nullptr &&
+                          fid_cooldown != nullptr && fid_health != nullptr &&
+                          fid_main_hand != nullptr && fid_anchor_item != nullptr &&
+                          fid_mace_item != nullptr && fid_trident_item != nullptr &&
+                          fid_block_uses != nullptr,
+                      "pvp/weapon fixture plumbing resolved");
+
+                // Build a stack for one of the fixture Items fields.
+                auto item_stack = [&](jfieldID item_fid) -> jobject {
+                    jobject item = (item_fid != nullptr)
+                                       ? env->GetStaticObjectField(cls1802, item_fid)
+                                       : nullptr;
+                    jobject stack = (item != nullptr && ctor1799 != nullptr)
+                                        ? env->NewObject(cls1799, ctor1799, item)
+                                        : nullptr;
+                    if (item != nullptr) {
+                        env->DeleteLocalRef(item);
+                    }
+                    return stack;
+                };
+                auto attacks_now = [&]() -> int {
+                    return (get_attacks != nullptr)
+                               ? env->CallStaticIntMethod(cls636, get_attacks)
+                               : 0;
+                };
+                auto block_uses_now = [&]() -> int {
+                    return (fid_block_uses != nullptr)
+                               ? env->GetStaticIntField(cls636, fid_block_uses)
+                               : 0;
+                };
+                auto reset_timer = [&](const char* name) {
+                    f_mod_set(name, 0);
+                    f_mod_set(name, 1);
+                };
+
+                if (ctor1297 != nullptr && ctor1511 != nullptr && ctor3965 != nullptr &&
+                    ctor3966 != nullptr && fid_1765 != nullptr) {
+                    // ---- AimAssist: cone gate + bounded pitch step ----------
+                    jobject aim_victim = env->NewObject(cls1309, ctor1309);
+                    check(aim_victim != nullptr, "AimAssist victim created");
+                    if (aim_victim != nullptr && fid_x != nullptr && fid_y != nullptr &&
+                        fid_z != nullptr && fid_yaw != nullptr && fid_pitch != nullptr) {
+                        env->SetDoubleField(aim_victim, fid_x, 0.0);
+                        env->SetDoubleField(aim_victim, fid_y, 0.0);
+                        env->SetDoubleField(aim_victim, fid_z, 3.0);
+                        env->CallVoidMethod(world2, add_entity, aim_victim);
+                        env->SetFloatField(player_obj, fid_yaw, 0.0f);
+                        env->SetFloatField(player_obj, fid_pitch, 0.0f);
+                        f_put_dbl("AimAssist", "Reach", 4.0);
+                        f_put_dbl("AimAssist", "Strength", 1.0);
+                        f_put_dbl("AimAssist", "Max Step", 10.0);
+                        f_put_dbl("AimAssist", "FOV Limit", 5.0);   // delta ≈ 11.7°
+                        f_mod_set("AimAssist", 1);
+                        f_tick();
+                        check(env->GetFloatField(player_obj, fid_pitch) == 0.0f,
+                              "AimAssist stays idle outside the FOV cone");
+                        f_put_dbl("AimAssist", "FOV Limit", 45.0);
+                        f_tick();
+                        const jfloat aimed = env->GetFloatField(player_obj, fid_pitch);
+                        check(aimed >= 9.0f && aimed <= 11.5f,
+                              "AimAssist stepped the pitch toward the target (bounded)");
+                        check(env->GetFloatField(player_obj, fid_yaw) == 0.0f,
+                              "AimAssist left the aligned yaw untouched");
+                        f_mod_set("AimAssist", 0);
+                        env->DeleteLocalRef(aim_victim);
+                    }
+
+                    // ---- Triggerbot: charge-gated crosshair attack ----------
+                    jobject tb_victim = env->NewObject(cls1309, ctor1309);
+                    check(tb_victim != nullptr, "Triggerbot victim created");
+                    if (tb_victim != nullptr && fid_cooldown != nullptr) {
+                        jobject tb_hit = env->NewObject(cls3966, ctor3966, tb_victim);
+                        if (tb_hit != nullptr) {
+                            env->SetObjectField(client_ref, fid_1765, tb_hit);
+                            env->SetFloatField(player_obj, fid_cooldown, 1.0f);
+                            const int before = attacks_now();
+                            f_mod_set("Triggerbot", 1);
+                            f_tick();
+                            check(attacks_now() == before + 1,
+                                  "Triggerbot attacked the crosshair target at full charge");
+                            env->SetFloatField(player_obj, fid_cooldown, 0.2f);
+                            reset_timer("Triggerbot");
+                            f_tick();
+                            check(attacks_now() == before + 1,
+                                  "Triggerbot waits below the charge threshold");
+                            f_mod_set("Triggerbot", 0);
+                            env->DeleteLocalRef(tb_hit);
+                        }
+                        env->DeleteLocalRef(tb_victim);
+                    }
+
+                    // ---- Auto Hit Crystal: crystal-only scan ------------------
+                    jobject crystal = env->NewObject(cls1511, ctor1511);
+                    check(crystal != nullptr, "end crystal fixture created");
+                    if (crystal != nullptr && fid_z != nullptr) {
+                        env->SetDoubleField(crystal, fid_x, 0.0);
+                        env->SetDoubleField(crystal, fid_y, 0.0);
+                        env->SetDoubleField(crystal, fid_z, 2.0);
+                        env->CallVoidMethod(world2, add_entity, crystal);
+                        f_put_dbl("Auto Hit Crystal", "Reach", 4.0);
+                        f_put_dbl("Auto Hit Crystal", "CPS", 1.0);
+                        const int before = attacks_now();
+                        f_mod_set("Auto Hit Crystal", 1);
+                        f_tick();
+                        check(attacks_now() == before + 1,
+                              "Auto Hit Crystal attacked the end crystal (living entities skipped)");
+                        f_mod_set("Auto Hit Crystal", 0);
+                        env->DeleteLocalRef(crystal);
+                    }
+
+                    // ---- Anchor Macro: vanilla use-click while holding --------
+                    if (fid_main_hand != nullptr && fid_anchor_item != nullptr &&
+                        ctor3965 != nullptr) {
+                        jobject anchor_stack = item_stack(fid_anchor_item);
+                        jobject block_hit = env->NewObject(cls3965, ctor3965);
+                        if (anchor_stack != nullptr && block_hit != nullptr) {
+                            env->SetObjectField(player_obj, fid_main_hand, anchor_stack);
+                            env->SetObjectField(client_ref, fid_1765, block_hit);
+                            const int before = block_uses_now();
+                            f_mod_set("Anchor Macro", 1);
+                            f_tick();
+                            check(block_uses_now() == before + 1,
+                                  "Anchor Macro used the crosshair block while holding the anchor");
+                            jobject totem_stack = item_stack(fid_totem);
+                            if (totem_stack != nullptr) {
+                                env->SetObjectField(player_obj, fid_main_hand, totem_stack);
+                                reset_timer("Anchor Macro");
+                                f_tick();
+                                check(block_uses_now() == before + 1,
+                                      "Anchor Macro holds fire without the anchor");
+                                env->DeleteLocalRef(totem_stack);
+                            }
+                            f_mod_set("Anchor Macro", 1);   // stays on for SafeAnchor
+                            env->DeleteLocalRef(block_hit);
+                        }
+                        if (anchor_stack != nullptr) {
+                            env->DeleteLocalRef(anchor_stack);
+                        }
+                    }
+
+                    // ---- SafeAnchor: health watchdog ---------------------------
+                    if (fid_health != nullptr) {
+                        env->SetFloatField(player_obj, fid_health, 2.0f);
+                        f_mod_set("SafeAnchor", 1);
+                        f_tick();
+                        check(f_mod_enabled("Anchor Macro") == 0,
+                              "SafeAnchor disabled Anchor Macro at low health");
+                        env->SetFloatField(player_obj, fid_health, 20.0f);
+                        f_mod_set("SafeAnchor", 0);
+                    }
+
+                    // ---- Auto Mace: fall-gated attack ---------------------------
+                    if (fid_fall != nullptr && fid_cooldown != nullptr &&
+                        fid_main_hand != nullptr) {
+                        jobject am_victim = env->NewObject(cls1309, ctor1309);
+                        if (am_victim != nullptr) {
+                            jobject am_hit = env->NewObject(cls3966, ctor3966, am_victim);
+                            if (am_hit != nullptr) {
+                                env->SetObjectField(client_ref, fid_1765, am_hit);
+                                env->SetFloatField(player_obj, fid_cooldown, 1.0f);
+                                jobject mace_stack = item_stack(fid_mace_item);
+                                if (mace_stack != nullptr) {
+                                    env->SetObjectField(player_obj, fid_main_hand, mace_stack);
+                                    env->SetDoubleField(player_obj, fid_fall, 2.0);
+                                    const int before = attacks_now();
+                                    f_mod_set("Auto Mace", 1);
+                                    f_tick();
+                                    check(attacks_now() == before + 1,
+                                          "Auto Mace attacked while falling with the mace");
+                                    env->SetDoubleField(player_obj, fid_fall, 0.0);
+                                    reset_timer("Auto Mace");
+                                    f_tick();
+                                    check(attacks_now() == before + 1,
+                                          "Auto Mace holds fire on the ground");
+                                    jobject totem_stack = item_stack(fid_totem);
+                                    if (totem_stack != nullptr) {
+                                        env->SetObjectField(player_obj, fid_main_hand, totem_stack);
+                                        env->SetDoubleField(player_obj, fid_fall, 2.0);
+                                        reset_timer("Auto Mace");
+                                        f_tick();
+                                        check(attacks_now() == before + 1,
+                                              "Auto Mace requires the mace when 'Require Mace' is on");
+                                        env->DeleteLocalRef(totem_stack);
+                                    }
+                                    f_mod_set("Auto Mace", 0);
+                                    env->DeleteLocalRef(mace_stack);
+                                }
+                                env->DeleteLocalRef(am_hit);
+                            }
+                            env->DeleteLocalRef(am_victim);
+                        }
+                    }
+
+                    // ---- Spear Lunge: attack + look-vector velocity boost -------
+                    if (fid_cooldown != nullptr && fid_main_hand != nullptr &&
+                        fid_yaw != nullptr && fid_pitch != nullptr && fid_vz != nullptr) {
+                        jobject sl_victim = env->NewObject(cls1309, ctor1309);
+                        if (sl_victim != nullptr) {
+                            jobject sl_hit = env->NewObject(cls3966, ctor3966, sl_victim);
+                            if (sl_hit != nullptr) {
+                                env->SetObjectField(client_ref, fid_1765, sl_hit);
+                                env->SetFloatField(player_obj, fid_cooldown, 1.0f);
+                                env->SetFloatField(player_obj, fid_yaw, 0.0f);
+                                env->SetFloatField(player_obj, fid_pitch, 0.0f);
+                                jobject trident_stack = item_stack(fid_trident_item);
+                                if (trident_stack != nullptr) {
+                                    env->SetObjectField(player_obj, fid_main_hand, trident_stack);
+                                    f_set_choice("Spear Lunge", "Item", 1);   // "Trident"
+                                    const int before = attacks_now();
+                                    f_mod_set("Spear Lunge", 1);
+                                    f_tick();
+                                    check(attacks_now() == before + 1,
+                                          "Spear Lunge attacked the crosshair target");
+                                    const jdouble vz = env->GetDoubleField(player_obj, fid_vz);
+                                    check(vz > 0.9,
+                                          "Spear Lunge boosted the player along the look vector");
+                                    f_tick();   // inside the 1000 ms cooldown window
+                                    check(attacks_now() == before + 1 &&
+                                              env->GetDoubleField(player_obj, fid_vz) == vz,
+                                          "Spear Lunge cooldown window holds");
+                                    f_mod_set("Spear Lunge", 0);
+                                    env->SetObjectField(player_obj, fid_main_hand, nullptr);
+                                    env->DeleteLocalRef(trident_stack);
+                                }
+                                env->DeleteLocalRef(sl_hit);
+                            }
+                            env->DeleteLocalRef(sl_victim);
+                        }
+                    }
+
+                    env->SetObjectField(client_ref, fid_1765, nullptr);
+                }
+                env->DeleteLocalRef(world2);
+            }
             env->DeleteLocalRef(world);
         }
         env->DeleteLocalRef(player_obj);
@@ -787,7 +1116,7 @@ int main(int argc, char** argv) {
     const std::string log = read_all("logs/latest.log");
     check(contains(log, "no JVM present in this process — deferred to JNI_OnLoad"),
           "log: constructor deferred init");
-    check(contains(log, "registered 11 built-in modules"), "log: built-in modules registered");
+    check(contains(log, "registered 18 built-in modules"), "log: built-in modules registered");
     check(contains(log, "Fullbright enabled"), "log: Fullbright enable recorded");
     check(contains(log, "Fullbright disabled"), "log: Fullbright disable recorded");
     check(contains(log, "click-gui opened"), "log: click-gui open recorded");

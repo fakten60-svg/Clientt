@@ -127,11 +127,12 @@ struct config_persisted {
     const char* path = nullptr;
 };
 
-// Published by the combat attack automations (Auto Clicker, KillAura) right
-// after a successful vanilla attack went out. Decouples W-Tap (and any future
+// Published by the combat attack automations (Auto Clicker, KillAura,
+// Triggerbot, Auto Hit Crystal, Auto Mace, Spear Lunge) right after a
+// successful vanilla attack went out. Decouples W-Tap (and any future
 // attack-reactive module) from the attackers.
 struct combat_attack_performed {
-    const char* module = nullptr;   // "Auto Clicker" / "KillAura"
+    const char* module = nullptr;   // "Auto Clicker" / "KillAura" / ...
 };
 
 inline void event_bus::clear() {
