@@ -152,6 +152,9 @@ void game_state::release_bridge(JNIEnv* env) {
         if (int_cls_ != nullptr) {
             env->DeleteGlobalRef(int_cls_);
         }
+        if (combat_last_target_ != nullptr) {
+            env->DeleteGlobalRef(combat_last_target_);
+        }
     }
     double_cls_ = nullptr;
     double_value_of_ = nullptr;
@@ -159,6 +162,8 @@ void game_state::release_bridge(JNIEnv* env) {
     int_cls_ = nullptr;
     int_value_of_ = nullptr;
     int_int_value_ = nullptr;
+    combat_last_target_ = nullptr;
+    combat_name_valid_ = false;
 }
 
 jobject game_state::client() {

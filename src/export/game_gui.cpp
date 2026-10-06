@@ -55,6 +55,20 @@ WOKE_API int woke_game_set_sneaking(int on) {
     return woke::game::game_state::instance().set_sneaking(on != 0) ? 1 : 0;
 }
 
+// PlayerEntity.getAttackCooldownProgress(0) in [0,1]; -1.0 when absent.
+WOKE_API float woke_game_attack_cooldown() {
+    return woke::game::game_state::instance().attack_cooldown_progress();
+}
+
+// Health of the entity under the crosshair; -1.0 when there is no living target.
+WOKE_API float woke_game_target_health() {
+    woke::game::game_state::combat_target_info t;
+    if (!woke::game::game_state::instance().combat_target(t, nullptr, 0) || !t.living) {
+        return -1.0f;
+    }
+    return t.health;
+}
+
 // ---- hook engine / present-hook introspection -----------------------------------
 
 WOKE_API int woke_hook_status() {

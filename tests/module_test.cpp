@@ -121,6 +121,13 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_1297.java",
         "tests/fixtures/src/net/minecraft/class_315.java",
         "tests/fixtures/src/net/minecraft/class_7172.java",
+        "tests/fixtures/src/net/minecraft/class_1309.java",
+        "tests/fixtures/src/net/minecraft/class_1657.java",
+        "tests/fixtures/src/net/minecraft/class_1268.java",
+        "tests/fixtures/src/net/minecraft/class_1299.java",
+        "tests/fixtures/src/net/minecraft/class_239.java",
+        "tests/fixtures/src/net/minecraft/class_3966.java",
+        "tests/fixtures/src/net/minecraft/class_636.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {
@@ -224,6 +231,11 @@ int main(int argc, char** argv) {
     auto f_reset_settings = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_config_reset_settings"));
     auto f_choices = reinterpret_cast<int (*)(const char*, const char*)>(
         ::dlsym(woke, "woke_module_setting_choice_count"));
+    auto f_cool = reinterpret_cast<float (*)()>(::dlsym(woke, "woke_game_attack_cooldown"));
+    auto f_tgt_hp = reinterpret_cast<float (*)()>(::dlsym(woke, "woke_game_target_health"));
+
+    check(f_cool != nullptr && f_tgt_hp != nullptr,
+          "combat game-state exports resolve via dlsym");
     auto f_choice_label = reinterpret_cast<const char* (*)(const char*, const char*, int)>(
         ::dlsym(woke, "woke_module_setting_choice_label"));
     auto f_choice = reinterpret_cast<int (*)(const char*, const char*)>(
@@ -286,25 +298,35 @@ int main(int argc, char** argv) {
     check(f_imgui() == 1, "ImGui context created (ready for the click-gui)");
 
     // ---- 3) module registry -------------------------------------------------
-    check(f_mod_count() == 5, "module registry holds 5 built-in modules");
+    check(f_mod_count() == 8, "module registry holds 8 built-in modules");
     const char* n0 = f_mod_name(0);
     const char* n1 = f_mod_name(1);
     const char* n2 = f_mod_name(2);
     const char* n3 = f_mod_name(3);
     const char* n4 = f_mod_name(4);
-    check(n0 && n1 && n2 && n3 && n4 && std::strcmp(n0, "HUD") == 0 &&
-              std::strcmp(n1, "Fullbright") == 0 && std::strcmp(n2, "Zoom") == 0 &&
-              std::strcmp(n3, "Sprint") == 0 && std::strcmp(n4, "Sneak") == 0,
-          "module names in registration order: HUD, Fullbright, Zoom, Sprint, Sneak");
-    check(f_mod_cat(0) && f_mod_cat(3) && std::strcmp(f_mod_cat(0), "Visual") == 0 &&
-              std::strcmp(f_mod_cat(3), "Movement") == 0,
-          "module categories: Visual (HUD/Fullbright/Zoom) and Movement (Sprint/Sneak)");
+    const char* n5 = f_mod_name(5);
+    const char* n6 = f_mod_name(6);
+    const char* n7 = f_mod_name(7);
+    check(n0 && n1 && n2 && n3 && n4 && n5 && n6 && n7 &&
+              std::strcmp(n0, "HUD") == 0 && std::strcmp(n1, "Fullbright") == 0 &&
+              std::strcmp(n2, "Zoom") == 0 && std::strcmp(n3, "Sprint") == 0 &&
+              std::strcmp(n4, "Sneak") == 0 && std::strcmp(n5, "Target HUD") == 0 &&
+              std::strcmp(n6, "Attack Cooldown") == 0 &&
+              std::strcmp(n7, "Auto Clicker") == 0,
+          "module names: HUD, Fullbright, Zoom, Sprint, Sneak, Target HUD, "
+          "Attack Cooldown, Auto Clicker");
+    check(f_mod_cat(0) && f_mod_cat(3) && f_mod_cat(5) &&
+              std::strcmp(f_mod_cat(0), "Visual") == 0 &&
+              std::strcmp(f_mod_cat(3), "Movement") == 0 &&
+              std::strcmp(f_mod_cat(5), "Combat") == 0,
+          "module categories: Combat (Target HUD/...), Visual (HUD/...), Movement (Sprint/...)");
     check(f_cat_total() == 6 && f_cat_at(0) && std::strcmp(f_cat_at(0), "Combat") == 0 &&
               std::strcmp(f_cat_at(5), "Visual") == 0,
           "the six spec categories are exposed in display order");
     check(f_cat_count("Visual") == 3 && f_cat_count("Movement") == 2 &&
-              f_cat_count("Combat") == 0,
-          "per-category module counts (Visual 3, Movement 2, Combat 0)");
+              f_cat_count("Combat") == 3 && f_cat_count("Mace") == 0 &&
+              f_cat_count("Misc") == 0 && f_cat_count("Spear") == 0,
+          "per-category module counts (Combat 3, Visual 3, Movement 2, rest 0)");
     check(f_cat_enabled("Visual") == 0 && f_cat_enabled("Movement") == 0,
           "no module is enabled before any toggle (fresh config)");
     check(f_mod_enabled("DoesNotExist") == -1, "unknown module probes as -1");
@@ -410,7 +432,10 @@ int main(int argc, char** argv) {
           "sidebar page switch to Movement");
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 2,
           "Movement page drew its 2 module cards");
-    check(f_select_page("Combat") == 1, "sidebar page switch to the empty Combat category");
+    check(f_select_page("Combat") == 1, "sidebar page switch to the Combat category");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 3,
+          "Combat page draws its 3 module cards");
+    check(f_select_page("Mace") == 1, "sidebar page switch to the empty Mace category");
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 0,
           "empty category draws no cards (0-badge section)");
     check(f_select_page("NoSuchPage") == 0, "unknown page name is rejected");
@@ -502,6 +527,126 @@ int main(int argc, char** argv) {
     check(f_listeners("frame_tick") == 0, "frame_tick has no listeners yet (decoupled)");
     check(f_listeners("nope") == -1, "unknown event name reports -1");
 
+    // ---- 7d2) combat client-state (Target HUD / Auto Clicker paths) ---------
+    // Wire the combat fixture graph: interactionManager + crosshairTarget.
+    jclass cls636 = env->FindClass("net/minecraft/class_636");
+    jclass cls3966 = env->FindClass("net/minecraft/class_3966");
+    jclass cls1309 = env->FindClass("net/minecraft/class_1309");
+    check(cls636 != nullptr && cls3966 != nullptr && cls1309 != nullptr,
+          "combat fixture classes found");
+    jmethodID ctor636 =
+        (cls636 != nullptr) ? env->GetMethodID(cls636, "<init>", "()V") : nullptr;
+    jmethodID ctor3966 = (cls3966 != nullptr)
+                             ? env->GetMethodID(cls3966, "<init>", "(Lnet/minecraft/class_1297;)V")
+                             : nullptr;
+    jmethodID ctor1309 =
+        (cls1309 != nullptr) ? env->GetMethodID(cls1309, "<init>", "()V") : nullptr;
+    jfieldID fid_mgr = env->GetStaticFieldID(cls310, "field_instance", "Lnet/minecraft/class_310;");
+    check(ctor636 != nullptr && ctor3966 != nullptr && ctor1309 != nullptr &&
+              fid_mgr != nullptr,
+          "combat fixture constructors + client holder found");
+    jobject client_ref = env->GetStaticObjectField(cls310, fid_mgr);
+    check(client_ref != nullptr, "fixture client instance reachable for combat wiring");
+    if (client_ref != nullptr && ctor636 != nullptr && ctor3966 != nullptr) {
+        jobject manager = env->NewObject(cls636, ctor636);
+        jfieldID fid_1761 = env->GetFieldID(cls310, "field_1761", "Lnet/minecraft/class_636;");
+        jfieldID fid_1765 = env->GetFieldID(cls310, "field_1765", "Lnet/minecraft/class_239;");
+        check(manager != nullptr && fid_1761 != nullptr && fid_1765 != nullptr,
+              "interactionManager fixture + crosshair fields resolved");
+        if (manager != nullptr && fid_1761 != nullptr && fid_1765 != nullptr) {
+            env->SetObjectField(client_ref, fid_1761, manager);
+
+            jmethodID get_attacks =
+                env->GetStaticMethodID(cls636, "attackCount", "()I");
+            check(get_attacks != nullptr, "fixture attack counter reachable");
+            const int attacks_before = (get_attacks != nullptr)
+                                           ? env->CallStaticIntMethod(cls636, get_attacks)
+                                           : 0;
+
+            // Attack cooldown export: fixture player returns 1.0 by default.
+            check(near(f_cool(), 1.0), "attack cooldown reads the fixture value (1.0)");
+
+            // No target -> client_attack refuses; target_health is -1.
+            check(f_tgt_hp() == -1.0f, "no crosshair target -> target health is -1");
+
+            // Crosshair on a living entity -> Auto Clicker attacks exactly once
+            // per charge + rate window (CPS parked at 1 to keep timing stable).
+            jobject victim = env->NewObject(cls1309, ctor1309);
+            jobject hit = (victim != nullptr) ? env->NewObject(cls3966, ctor3966, victim)
+                                              : nullptr;
+            check(victim != nullptr && hit != nullptr, "victim entity + hit result created");
+            if (hit != nullptr) {
+                env->SetObjectField(client_ref, fid_1765, hit);
+                check(near(f_tgt_hp(), 20.0),
+                      "target health reads the fixture value (20.0) through the crosshair raycast");
+                f_put_dbl("Auto Clicker", "CPS", 1.0);
+                check(f_mod_set("Auto Clicker", 1) == 1, "Auto Clicker enabled");
+                f_tick();
+                const int after_first = (get_attacks != nullptr)
+                                            ? env->CallStaticIntMethod(cls636, get_attacks)
+                                            : 0;
+                check(after_first == attacks_before + 1,
+                      "Auto Clicker performed exactly one vanilla attack");
+                f_tick();
+                f_tick();
+                const int after_more = (get_attacks != nullptr)
+                                           ? env->CallStaticIntMethod(cls636, get_attacks)
+                                           : 0;
+                check(after_more == attacks_before + 1,
+                      "CPS rate limit holds (no attack within the 1 s window)");
+
+                // Disable/enable resets the rate window (on_disable clears it),
+                // so each guard below is checked with a fresh timer.
+                auto reset_timer = [&] {
+                    f_mod_set("Auto Clicker", 0);
+                    f_mod_set("Auto Clicker", 1);
+                };
+
+                // Crosshair on the local player -> self-attack refused.
+                jobject self_hit =
+                    env->NewObject(cls3966, ctor3966,
+                                   env->GetObjectField(client_ref,
+                                                       env->GetFieldID(cls310, "field_1724",
+                                                                       "Lnet/minecraft/class_746;")));
+                if (self_hit != nullptr) {
+                    env->SetObjectField(client_ref, fid_1765, self_hit);
+                    reset_timer();
+                    f_tick();
+                    check((get_attacks != nullptr)
+                              ? env->CallStaticIntMethod(cls636, get_attacks) == after_more
+                              : 1,
+                          "Auto Clicker never attacks the local player");
+                    env->DeleteLocalRef(self_hit);
+                }
+
+                // Crosshair on a block/miss (plain HitResult) -> no attack.
+                jclass cls239 = env->FindClass("net/minecraft/class_239");
+                jmethodID ctor239 =
+                    (cls239 != nullptr) ? env->GetMethodID(cls239, "<init>", "()V") : nullptr;
+                if (cls239 != nullptr && ctor239 != nullptr) {
+                    jobject miss = env->NewObject(cls239, ctor239);
+                    env->SetObjectField(client_ref, fid_1765, miss);
+                    reset_timer();
+                    f_tick();
+                    check((get_attacks != nullptr)
+                              ? env->CallStaticIntMethod(cls636, get_attacks) == after_more
+                              : 1,
+                          "non-entity crosshair target is ignored");
+                    env->DeleteLocalRef(miss);
+                }
+
+                check(f_mod_set("Auto Clicker", 0) == 1, "Auto Clicker disabled again");
+                env->SetObjectField(client_ref, fid_1765, nullptr);
+                env->DeleteLocalRef(hit);
+            }
+            if (victim != nullptr) {
+                env->DeleteLocalRef(victim);
+            }
+            env->DeleteLocalRef(manager);
+        }
+        env->DeleteLocalRef(client_ref);
+    }
+
     // ---- 7e) game-thread task queue ----------------------------------------
     check(f_task_on_game() == 0, "this test thread is not the game thread");
     const long long executed_before = f_task_executed();
@@ -520,7 +665,7 @@ int main(int argc, char** argv) {
     const std::string log = read_all("logs/latest.log");
     check(contains(log, "no JVM present in this process — deferred to JNI_OnLoad"),
           "log: constructor deferred init");
-    check(contains(log, "registered 5 built-in modules"), "log: built-in modules registered");
+    check(contains(log, "registered 8 built-in modules"), "log: built-in modules registered");
     check(contains(log, "Fullbright enabled"), "log: Fullbright enable recorded");
     check(contains(log, "Fullbright disabled"), "log: Fullbright disable recorded");
     check(contains(log, "click-gui opened"), "log: click-gui open recorded");

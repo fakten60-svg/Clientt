@@ -110,6 +110,13 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_1297.java",
         "tests/fixtures/src/net/minecraft/class_315.java",
         "tests/fixtures/src/net/minecraft/class_7172.java",
+        "tests/fixtures/src/net/minecraft/class_1309.java",
+        "tests/fixtures/src/net/minecraft/class_1657.java",
+        "tests/fixtures/src/net/minecraft/class_1268.java",
+        "tests/fixtures/src/net/minecraft/class_1299.java",
+        "tests/fixtures/src/net/minecraft/class_239.java",
+        "tests/fixtures/src/net/minecraft/class_3966.java",
+        "tests/fixtures/src/net/minecraft/class_636.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {
@@ -189,7 +196,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     check(f_status() == 2, "deferred worker reached kReady (state == 2) with no JNI_OnLoad");
-    check(f_modules() == 5, "built-in modules registered by the deferred worker");
+    check(f_modules() == 8, "built-in modules registered by the deferred worker");
     check(f_mappings() >= 9000, "mappings.json parsed by the deferred worker");
     check(f_cached() >= 1, "reflection cache populated by the deferred worker");
     std::printf("       cached: %lld classes\n", f_cached());
