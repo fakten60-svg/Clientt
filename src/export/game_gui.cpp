@@ -69,6 +69,11 @@ WOKE_API float woke_game_target_health() {
     return t.health;
 }
 
+// 1 when the player's offhand currently holds a totem of undying (Auto Totem).
+WOKE_API int woke_game_offhand_totem() {
+    return woke::game::game_state::instance().offhand_totem() ? 1 : 0;
+}
+
 // ---- hook engine / present-hook introspection -----------------------------------
 
 WOKE_API int woke_hook_status() {

@@ -74,6 +74,8 @@ public:
         bool alive = false;     // Entity.isAlive()
         float health = 0.0f;    // LivingEntity.getHealth() (0 when !living)
         float max_health = 0.0f;
+        jobject target = nullptr;  // local ref of the entity (nearest_target scan);
+                                   // valid until the caller returns to JNI
     };
     bool combat_target(combat_target_info& out, char* name_buf, std::size_t cap);
 
@@ -86,6 +88,35 @@ public:
     // attack the local player. false when there is no entity target.
     bool client_attack();
 
+    // ---- combat target acquisition (KillAura) -------------------------------
+
+    // Scans the client world for the nearest living, alive, non-self entity
+    // within `max_distance` (Entity.squaredDistanceTo against the player).
+    // Reads client state only — no aim assist: the distance is informational,
+    // aiming stays with the player. On success `out.target` carries a local
+    // ref of the best entity, valid until the caller returns to JNI; pass it
+    // to client_attack_entity() in the same frame. Returns false when the
+    // world/graph is unreachable or nothing is in reach.
+    bool nearest_combat_target(float max_distance, combat_target_info& out, char* name_buf,
+                               std::size_t cap);
+
+    // The vanilla attack against a SPECIFIC entity (KillAura path): the same
+    // interactionManager.attackEntity + swingHand pair, with the same guards
+    // (living, alive, never the local player).
+    bool client_attack_entity(jobject target);
+
+    // True when the player's offhand currently holds a totem of undying.
+    // Reads PlayerInventory.OFF_HAND_SLOT through Inventory.getStack.
+    bool offhand_totem();
+
+    // Moves one totem of undying from the main inventory (storage, then
+    // hotbar) into the offhand through the vanilla inventory click exchange:
+    // interactionManager.clickSlot(playerScreenHandler.syncId, 45 (offhand),
+    // handler_slot, SlotActionType.SWAP, player) — the same client-side
+    // inventory click a manual offhand drag performs; no packet of our own.
+    // false when there is no totem to move or the handler path is absent.
+    bool move_totem_to_offhand();
+
 private:
     game_state() = default;
 
@@ -96,6 +127,7 @@ private:
     jobject player_object(JNIEnv* env);
     jobject crosshair_target_object(JNIEnv* env);
     jobject interaction_manager_object(JNIEnv* env);
+    jobject world_object(JNIEnv* env);
     void release_bridge(JNIEnv* env);
 
     mutable std::mutex mutex_;
