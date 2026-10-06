@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     check(f_status() == 2, "deferred worker reached kReady (state == 2) with no JNI_OnLoad");
-    check(f_modules() == 3, "built-in modules registered by the deferred worker");
+    check(f_modules() == 5, "built-in modules registered by the deferred worker");
     check(f_mappings() >= 9000, "mappings.json parsed by the deferred worker");
     check(f_cached() >= 1, "reflection cache populated by the deferred worker");
     std::printf("       cached: %lld classes\n", f_cached());

@@ -16,7 +16,9 @@
 
 #include <imgui.h>
 
+#include "core/event_bus.hpp"
 #include "core/logger.hpp"
+#include "core/task_queue.hpp"
 #include "game/game_state.hpp"
 #include "gui/gui.hpp"
 #include "hook/hook_engine.hpp"
@@ -49,32 +51,41 @@ void swap_buffers_detour(void* dpy, unsigned long drawable) {
     using clock = std::chrono::steady_clock;
     const clock::time_point t0 = clock::now();
 
-    g_hits.fetch_add(1, std::memory_order_relaxed);
+    const long long hit = g_hits.fetch_add(1, std::memory_order_relaxed);
+
+    // This thread is the game/frame thread: bind it and run whatever other
+    // threads queued up (JNI work is only ever done here).
+    auto& tasks = core::task_queue::instance();
+    tasks.mark_game_thread();
+    tasks.drain();
 
     // Client-state work (not draw calls): keybind edge-detection + module
     // ticks run regardless of GUI visibility.
     gui::poll_keybind(dpy);
     modules::module_registry::instance().tick_all(game::game_state::instance());
 
+    const clock::time_point now = clock::now();
+    float dt = std::chrono::duration<float>(now - g_last_frame).count();
+    g_last_frame = now;
+    if (dt < 0.001f || dt > 0.1f) {
+        dt = 1.0f / 60.0f;                   // clamp first/odd frames
+    }
+    core::event_bus::emit(core::frame_tick{static_cast<double>(dt), hit});
+
     bool drew_frame = false;
-    if (gui::is_open() && g_imgui != nullptr) {
-        ImGuiIO& io = ImGui::GetIO();
-        const clock::time_point now = clock::now();
-        float dt = std::chrono::duration<float>(now - g_last_frame).count();
-        g_last_frame = now;
-        if (dt < 0.001f || dt > 0.1f) {
-            dt = 1.0f / 60.0f;                   // clamp first/odd frames
-        }
-        io.DeltaTime = dt;
+    if (gui::wants_frames() && g_imgui != nullptr) {
+        ImGui::GetIO().DeltaTime = dt;
 
         // Decides gl/bare on the first frame; false while GLX is reachable but
         // no context is current yet — then this present stays suppressed.
         if (backend::begin_present_frame(dpy, drawable)) {
             ImGui::NewFrame();
-            gui::draw();                      // click-gui window + module list
+            gui::draw();                      // dashboard (or toasts only)
             ImGui::Render();
             backend::end_frame();             // no-op unless the GL renderer is attached
             drew_frame = true;
+        } else if (gui::is_open()) {
+            drew_frame = true;                // GUI open: not a suppressed frame
         }
     }
     if (drew_frame) {

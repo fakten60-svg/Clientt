@@ -14,10 +14,11 @@ Produces a single shared object: **`libwoke.so`**.
 |---|---|
 | Lifecycle | Session log under `logs/` (+ `latest.log` symlink), JNI attach, `mappings.json` parse, reflection cache, built-in module registration, config load, hook engine — all idempotent and re-attachable |
 | Present hook | MinHook detour on `glXSwapBuffers`, always chaining to the original; timestamps its own work to keep per-frame overhead measurable |
-| Overlay | Dear ImGui 1.92 click-gui (module list by category, toggles, tooltips, live metrics footer). When the GUI is closed the detour performs **zero** ImGui work (draw-call suppression) |
+| Overlay | Dear ImGui 1.92 **macOS dashboard** click-gui (traffic-light title bar, category sidebar, searchable module cards with Apple-style pill toggles, grid/list view, toasts, live metrics footer). When the GUI is closed and no animation/toast is settling the detour performs **zero** ImGui work (draw-call suppression) |
 | Input | Keybind edge-detection via `XQueryKeymap` on the game's X11 `Display`; pointer state via `XQueryPointer` |
-| Modules | HUD (fps/client state), Fullbright (gamma read-modify-restore), Sprint (client-state toggle) |
-| Config | `woke.wtf/config.v1` JSON — module states + keybind, written on every toggle |
+| Modules | 5 built-ins across 6 spec categories — HUD + Fullbright + Zoom (Visual), Sprint + Sneak (Movement). Each has typed `BaseSetting`s; Fullbright/Zoom are read-modify-restore, Sprint/Sneak are per-tick client-state asserts |
+| Config | `woke.wtf/config.v1` JSON — module states, per-module `settings`, per-module `keybinds`, and the GUI keybind; written on every toggle/edit |
+| Subsystems | Decoupled type-safe `core::event_bus`, main-thread `core::task_queue`, `ui::notification_queue` toasts, `ui::animation_controller` (spring/easing), `ui::theme` palette, `utils::render`/`utils::math` stateless helpers |
 
 Everything client-side is read/written through the JNI reflection cache; no
 packet generation, no spoofing, no server interaction.
@@ -53,6 +54,43 @@ other path is never entered.
 
 If GLX is reachable but never becomes current (≈300 presents), the client warns
 and settles for the CPU-only overlay instead of suppressing every frame.
+
+## Modules & categories
+
+Six categories are always present in the sidebar (`Combat`, `Mace`, `Misc`,
+`Movement`, `Spear`, `Visual`); a category with no modules simply shows a
+`0 modules` badge. Built-ins:
+
+| Module | Category | Behavior |
+|---|---|---|
+| HUD | Visual | Draws a watermark (optionally with live FPS) in a configurable corner |
+| Fullbright | Visual | Read-modify-restore of the `gamma` video setting |
+| Zoom | Visual | Read-modify-restore of the `fov` video setting (`Integer`-boxed `SimpleOption`) |
+| Sprint | Movement | Per-tick `Entity#setSprinting(true)` assert while enabled |
+| Sneak | Movement | Per-tick `Entity#setSneaking(true)` assert while enabled |
+
+Every module derives from `BaseModule` with `on_enable` / `on_disable` / `on_tick`
+/ `on_render` hooks and declares typed `BaseSetting<T>` values (boolean, integer,
+decimal, color, text). Settings serialize automatically into the config file; a
+toggle emits `core::event_bus::emit(module_toggled{...})` so the dashboard toast
+and any other listener react without a direct dependency.
+
+## The macOS dashboard
+
+The ClickGUI replicates a modern macOS window: a charcoal glass frame with
+`window_rounding = 14`, a centered `woke.wtf — Utility Client` title bar and the
+three traffic-light controls (close `#FF5F56`, minimize `#FFBD2E`, zoom
+`#27C93F`). Inside: a category sidebar with active-module counters, a header with
+the page title, `N modules · M enabled` sub-badge, a search field and list/grid
+toggle, and rounded module cards (`frame_rounding = 8`) with description, keybind
+badge, an expandable chevron and an animated Apple-style pill toggle.
+
+Motion is centralized in `ui::animation`: the window uses a soft spring + opacity
+fade for open/close, pill nubs cross-fade and slide, hover states ease brightness,
+and toasts slide in from the top-right with a fading lifetime bar. All motion is
+time-delta based, so it looks identical at 60 Hz or 240 Hz. `woke_gui_wants_frames`
+reports whether anything is unsettled; only then does the present detour run
+ImGui work.
 
 ## Configuration
 
@@ -142,13 +180,24 @@ FORCE=1 scripts/fetch_mappings.sh         # force re-download of cached jars
 
 ```
 src/libwoke.cpp              lifecycle, JNI entry points, deferred-init worker, woke_* exports
-src/core/                    logger, filesystem helpers, platform utilities, config
+src/core/logger.hpp         multi-session colorized logger (console + file + latest.log)
+src/core/config.*            JSON config engine (module states, settings, keybinds)
+src/core/setting.hpp         BaseSetting<T> templated setting primitives + setting_group
+src/core/event_bus.hpp       decoupled per-type event channels (module_toggled, frame_tick, ...)
+src/core/task_queue.*        bounded ring of callables drained on the game thread
 src/jni/                     mappings.json parser + jclass/jmethodID/jfieldID cache
-src/game/                    client-state layer (client/player/options, fps, gamma, sprinting)
-src/modules/                 module base + registry, built-ins (HUD, Fullbright, Sprint)
-src/gui/                     click-gui window, keybind polling, headless frame cycle
+src/game/game_state.*        client-state layer (client/player/options, fps, gamma, fov, sprint/sneak)
+src/modules/module.*         BaseModule lifecycle + registry + categories
+src/modules/builtin.*        built-ins: HUD, Fullbright, Zoom, Sprint, Sneak
+src/ui/theme.*               macOS palette + geometry + ImGui style
+src/ui/animation.*           AnimationController (spring_value, animated_value, easing curves)
+src/ui/component.*           reusable ImGui widgets (traffic light, toggle, search field, ...)
+src/ui/notifications.*       toast queue (slide-in, lifetime bar)
+src/utils/render.*           RenderUtils: rounded rects, borders, shadows, gradients, text clip
+src/utils/math.hpp           MathUtils: clamp/lerp/exp_approach/spring/easing/color
+src/gui/gui.*                the macOS dashboard (pages, cards, settings editors, keybind polling)
 src/hook/hook_engine.*       MinHook wrapper + engine shutdown
-src/hook/present_hook.*      glXSwapBuffers detour, frame timing, suppression metrics
+src/hook/present_hook.*      glXSwapBuffers detour, task drain, frame_tick, suppression metrics
 src/hook/imgui_backend.*     renderer mode decision, GL attach, X11 display/pointer input
 ```
 
@@ -183,4 +232,10 @@ Run them **from the repo root**, in this order (later tests read
 `hook_test` and `defer_test` need a JDK (`WOKE_JAVA_HOME`, `JAVA_HOME`, or
 `.cache/tools/jdk`). `hook_test` exports its own `glXSwapBuffers` (hence
 `-rdynamic`) so MinHook patches a real function, and forces the CPU-only overlay
-so the result does not depend on the host's GL stack.
+so the result does not depend on the host's GL stack. `module_test` additionally
+exercises the new API surface: category counts, FOV/sneak round-trips, `BaseSetting`
+persistence and reset, per-module keybinds, dashboard pages/search/grid/expand,
+toasts, the animation controller, event-bus listener counts and the task queue.
+
+The GL renderer branch (`gl` mode) is only exercised against a real GLX context
+and is not covered by the headless suites.
