@@ -215,11 +215,29 @@ int main(int argc, char** argv) {
     check(f_frames() == 1, "GUI open -> bare ImGui frame executed (NewFrame+Render)");
     check(f_supp() == 1, "suppression counter did not advance while open");
 
-    // ---- 6) draw suppression again + steady-state frame budget -------------
+    // ---- 6) close animation, then draw suppression again --------------------
+    // Closing the dashboard plays a bounded slide-out/fade; once the window has
+    // fully animated away the detour returns to the suppressed fast path and
+    // the ImGui frame counter freezes again.
     f_set(0);
+    const long long frames_before_close = f_frames();
+    const long long supp_before_close = f_supp();
     call_swap();
-    check(f_frames() == 1 && f_supp() == 2,
-          "GUI closed again -> suppressed (ImGui frame count frozen)");
+    check(f_supp() == supp_before_close && f_frames() == frames_before_close + 1,
+          "closing frame draws the dashboard slide-out (not suppressed yet)");
+    for (int i = 0; i < 120; ++i) {
+        call_swap();
+    }
+    const long long close_frames = f_frames() - frames_before_close;
+    check(close_frames > 1 && close_frames < 60,
+          "close animation is bounded (does not keep drawing forever)");
+    check(f_supp() > supp_before_close,
+          "GUI closed again -> suppressed once the animation settled");
+    const long long frozen_frames = f_frames();
+    const long long supp_now = f_supp();
+    call_swap();
+    check(f_frames() == frozen_frames && f_supp() == supp_now + 1,
+          "steady closed state: ImGui frames frozen, every present suppressed");
 
     // Budget: < 0.5 ms of client work per present. Measured over a batch of
     // GUI-open presents after a warm-up so the one-time first-frame setup

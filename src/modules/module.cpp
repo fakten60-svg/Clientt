@@ -1,11 +1,15 @@
 // ============================================================================
 //  woke.wtf — src/modules/module.cpp
-//  Module base + registry implementation.
+//  Module base + registry implementation. A toggle publishes a
+//  module_toggled event on the core event bus, so listeners (notifications,
+//  future persistence/analytics) never need to know about the registry.
 // ============================================================================
 #include "modules/module.hpp"
 
+#include <cstring>
 #include <utility>
 
+#include "core/event_bus.hpp"
 #include "core/logger.hpp"
 
 namespace woke::modules {
@@ -27,6 +31,7 @@ void module::set_enabled(bool on) {
         WOKE_INFO("module", "%s disabled (%s)", name_.c_str(), category_.c_str());
         on_disable();
     }
+    core::event_bus::emit(core::module_toggled{name_.c_str(), category_.c_str(), on});
 }
 
 module_registry& module_registry::instance() {
@@ -62,6 +67,20 @@ std::vector<module*> module_registry::all() const {
     return out;
 }
 
+std::vector<module*> module_registry::by_category(const char* category) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<module*> out;
+    if (category == nullptr) {
+        return out;
+    }
+    for (const auto& m : modules_) {
+        if (m->category() == category) {
+            out.push_back(m.get());
+        }
+    }
+    return out;
+}
+
 bool module_registry::set_enabled(const std::string& name, bool on) {
     module* m = nullptr;
     {
@@ -89,9 +108,32 @@ void module_registry::tick_all(game::game_state& gs) {
     }
 }
 
+void module_registry::render_all() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& m : modules_) {
+        if (m->enabled()) {
+            m->on_render();
+        }
+    }
+}
+
 void module_registry::clear() {
     std::lock_guard<std::mutex> lock(mutex_);
     modules_.clear();
+}
+
+int category_module_count(const char* category) {
+    return static_cast<int>(module_registry::instance().by_category(category).size());
+}
+
+int category_enabled_count(const char* category) {
+    int n = 0;
+    for (const module* m : module_registry::instance().by_category(category)) {
+        if (m->enabled()) {
+            ++n;
+        }
+    }
+    return n;
 }
 
 } // namespace woke::modules

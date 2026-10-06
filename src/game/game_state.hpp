@@ -51,14 +51,21 @@ public:
     double gamma();                       // GameOptions.gamma (SimpleOption) — 0.0 default
     bool set_gamma(double gamma);         // gamma.setValue(Double) — video setting only
 
+    int fov();                            // GameOptions.fov (SimpleOption) — 0 default
+    bool set_fov(int fov);                // fov.setValue(Integer) — video setting only
+
     bool is_sprinting();                  // Entity.isSprinting() on the player
     bool set_sprinting(bool on);          // Entity.setSprinting() — movement state
+
+    bool is_sneaking();                   // Entity.isSneaking() on the player
+    bool set_sneaking(bool on);           // Entity.setSneaking() — movement state
 
 private:
     game_state() = default;
 
     JNIEnv* env_for(JavaVM* vm);
     bool ensure_double_bridge(JNIEnv* env);   // java/lang/Double valueOf/doubleValue
+    bool ensure_int_bridge(JNIEnv* env);      // java/lang/Integer valueOf/intValue
     jobject options_object(JNIEnv* env);
     jobject player_object(JNIEnv* env);
     void release_bridge(JNIEnv* env);
@@ -70,6 +77,11 @@ private:
     jclass double_cls_ = nullptr;
     jmethodID double_value_of_ = nullptr;
     jmethodID double_double_value_ = nullptr;
+
+    // java/lang/Integer bridge — the FOV option is boxed as an Integer.
+    jclass int_cls_ = nullptr;
+    jmethodID int_value_of_ = nullptr;
+    jmethodID int_int_value_ = nullptr;
 };
 
 } // namespace woke::game

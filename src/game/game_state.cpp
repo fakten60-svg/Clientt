@@ -38,7 +38,7 @@ void game_state::set_vm(JavaVM* vm) {
     JNIEnv* old_env = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (double_cls_ != nullptr) {
+        if (double_cls_ != nullptr || int_cls_ != nullptr) {
             // Bridge release needs an env; take the current one if attached.
             void* p = nullptr;
             if (vm_ != nullptr &&
@@ -117,14 +117,48 @@ bool game_state::ensure_double_bridge(JNIEnv* env) {
     return double_value_of_ != nullptr && double_double_value_ != nullptr;
 }
 
+bool game_state::ensure_int_bridge(JNIEnv* env) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (int_cls_ != nullptr) {
+        return int_value_of_ != nullptr && int_int_value_ != nullptr;
+    }
+    jclass local = env->FindClass("java/lang/Integer");
+    if (local == nullptr) {
+        clear_exception(env);
+        return false;
+    }
+    int_cls_ = static_cast<jclass>(env->NewGlobalRef(local));
+    env->DeleteLocalRef(local);
+    if (int_cls_ == nullptr) {
+        return false;
+    }
+    int_value_of_ = env->GetStaticMethodID(int_cls_, "valueOf", "(I)Ljava/lang/Integer;");
+    if (int_value_of_ == nullptr) {
+        clear_exception(env);
+    }
+    int_int_value_ = env->GetMethodID(int_cls_, "intValue", "()I");
+    if (int_int_value_ == nullptr) {
+        clear_exception(env);
+    }
+    return int_value_of_ != nullptr && int_int_value_ != nullptr;
+}
+
 void game_state::release_bridge(JNIEnv* env) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (double_cls_ != nullptr && env != nullptr) {
-        env->DeleteGlobalRef(double_cls_);
+    if (env != nullptr) {
+        if (double_cls_ != nullptr) {
+            env->DeleteGlobalRef(double_cls_);
+        }
+        if (int_cls_ != nullptr) {
+            env->DeleteGlobalRef(int_cls_);
+        }
     }
     double_cls_ = nullptr;
     double_value_of_ = nullptr;
     double_double_value_ = nullptr;
+    int_cls_ = nullptr;
+    int_value_of_ = nullptr;
+    int_int_value_ = nullptr;
 }
 
 jobject game_state::client() {
@@ -268,6 +302,108 @@ bool game_state::set_gamma(double gamma) {
         return false;
     }
     env->CallVoidMethod(simple, mid, boxed);
+    clear_exception(env);
+    return true;
+}
+
+int game_state::fov() {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return 0;
+    }
+    auto& cache = jni::reflection_cache::instance();
+    jobject options = options_object(env);
+    if (options == nullptr) {
+        return 0;
+    }
+    jfieldID fid = cache.find_field(kGameOptions, "fov", nullptr);
+    jmethodID mid = cache.find_method(kSimpleOption, "getValue", nullptr);
+    if (fid == nullptr || mid == nullptr) {
+        return 0;
+    }
+    jobject simple = env->GetObjectField(options, fid);
+    clear_exception(env);
+    if (simple == nullptr) {
+        return 0;
+    }
+    jobject boxed = env->CallObjectMethod(simple, mid);
+    clear_exception(env);
+    if (boxed == nullptr) {
+        return 0;
+    }
+    if (!ensure_int_bridge(env)) {
+        return 0;
+    }
+    jint value = env->CallIntMethod(boxed, int_int_value_);
+    clear_exception(env);
+    return value;
+}
+
+bool game_state::set_fov(int fov) {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    auto& cache = jni::reflection_cache::instance();
+    jobject options = options_object(env);
+    if (options == nullptr) {
+        return false;
+    }
+    jfieldID fid = cache.find_field(kGameOptions, "fov", nullptr);
+    jmethodID mid = cache.find_method(kSimpleOption, "setValue", nullptr);
+    if (fid == nullptr || mid == nullptr) {
+        return false;
+    }
+    jobject simple = env->GetObjectField(options, fid);
+    clear_exception(env);
+    if (simple == nullptr) {
+        return false;
+    }
+    if (!ensure_int_bridge(env)) {
+        return false;
+    }
+    jobject boxed = env->CallStaticObjectMethod(int_cls_, int_value_of_, fov);
+    clear_exception(env);
+    if (boxed == nullptr) {
+        return false;
+    }
+    env->CallVoidMethod(simple, mid, boxed);
+    clear_exception(env);
+    return true;
+}
+
+bool game_state::is_sneaking() {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return false;
+    }
+    jmethodID mid = jni::reflection_cache::instance().find_method(kEntity, "isSneaking", nullptr);
+    if (mid == nullptr) {
+        return false;
+    }
+    jboolean sneaking = env->CallBooleanMethod(player, mid);
+    clear_exception(env);
+    return sneaking == JNI_TRUE;
+}
+
+bool game_state::set_sneaking(bool on) {
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    jobject player = player_object(env);
+    if (player == nullptr) {
+        return false;
+    }
+    jmethodID mid = jni::reflection_cache::instance().find_method(kEntity, "setSneaking", nullptr);
+    if (mid == nullptr) {
+        return false;
+    }
+    env->CallVoidMethod(player, mid, on ? JNI_TRUE : JNI_FALSE);
     clear_exception(env);
     return true;
 }

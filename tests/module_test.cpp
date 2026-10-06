@@ -6,14 +6,20 @@
 //       SimpleOption, Entity) onto a test classpath
 //    2. dlopen libwoke.so FIRST (constructor defers init), then create a JVM
 //       and call JNI_OnLoad -> full startup incl. module registry + config
-//    3. module registry: 3 built-ins, names/categories, unknown-name probes
+//    3. module registry: 5 built-ins across the Visual/Movement categories,
+//       names/categories, category counts, unknown-name probes
 //    4. client-state layer against fixture objects wired through direct JNI:
 //       gamma read/write round-trip, sprint set/query, fps read
 //    5. Fullbright = read-modify-restore of gamma; Sprint = per-tick assert
 //    6. config persistence: toggles persist immediately (JSON), keybind
 //       round-trip, reload reapplies saved states
-//    7. click-gui: open-state toggling + headless frame draw (module rows)
-//    8. JNI_OnUnload tears modules + cache down; destructor ends the session
+//    7. click-gui: open-state toggling + headless frame draw (module rows),
+//       category pages, search filter, grid view
+//    8. BaseSetting persistence: values round-trip through the config file
+//    9. UI subsystems: notifications, animation channels, event bus, settings
+//       reset and per-module keybinds
+//   10. game-thread task queue: post from this thread, run on drain
+//   11. JNI_OnUnload tears modules + cache down; destructor ends the session
 //
 //  Build:  g++ -std=c++20 -Wall -Wextra -Wpedantic tests/module_test.cpp
 //          -I src -I .cache/tools/jdk/include -I .cache/tools/jdk/include/linux
@@ -146,6 +152,10 @@ int main(int argc, char** argv) {
     using draw_fn = int (*)(int*, int*);
     using onload_fn = jint (*)(JavaVM*, void*);
     using onunload_fn = void (*)(JavaVM*, void*);
+    using void_cstr_fn = void (*)(const char*);
+    using cstr_cstr_fn = int (*)(const char*, const char*);
+    using cstr_dbl_fn = double (*)(const char*, const char*);
+    using cstr_cstr_dbl_fn = int (*)(const char*, const char*, double);
 
     auto f_status = reinterpret_cast<status_fn>(::dlsym(woke, "woke_jni_status"));
     auto f_onload = reinterpret_cast<onload_fn>(::dlsym(woke, "JNI_OnLoad"));
@@ -173,6 +183,50 @@ int main(int argc, char** argv) {
     auto f_cfg_keybind = reinterpret_cast<int_fn>(::dlsym(woke, "woke_config_keybind"));
     auto f_cfg_set_keybind = reinterpret_cast<set_int_fn>(::dlsym(woke, "woke_config_set_keybind"));
     auto f_imgui = reinterpret_cast<int_fn>(::dlsym(woke, "woke_hook_imgui_initialized"));
+    auto f_fov = reinterpret_cast<int_fn>(::dlsym(woke, "woke_game_fov"));
+    auto f_set_fov = reinterpret_cast<int_int_fn>(::dlsym(woke, "woke_game_set_fov"));
+    auto f_sneak = reinterpret_cast<int_fn>(::dlsym(woke, "woke_game_is_sneaking"));
+    auto f_set_sneak = reinterpret_cast<int_int_fn>(::dlsym(woke, "woke_game_set_sneaking"));
+    auto f_page = reinterpret_cast<str_fn>(::dlsym(woke, "woke_gui_page"));
+    auto f_select_page = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_gui_select_page"));
+    auto f_set_search = reinterpret_cast<void_cstr_fn>(::dlsym(woke, "woke_gui_set_search"));
+    auto f_set_grid = reinterpret_cast<set_int_fn>(::dlsym(woke, "woke_gui_set_grid"));
+    auto f_grid = reinterpret_cast<int_fn>(::dlsym(woke, "woke_gui_grid"));
+    auto f_expand = reinterpret_cast<void_cstr_fn>(::dlsym(woke, "woke_gui_expand"));
+    auto f_gui_expanded = reinterpret_cast<str_fn>(::dlsym(woke, "woke_gui_expanded"));
+    auto f_wants = reinterpret_cast<int_fn>(::dlsym(woke, "woke_gui_wants_frames"));
+    auto f_notify = reinterpret_cast<int (*)(const char*, const char*, int)>(
+        ::dlsym(woke, "woke_notify"));
+    auto f_notif_active = reinterpret_cast<int_fn>(::dlsym(woke, "woke_notifications_active"));
+    auto f_notif_pushed = reinterpret_cast<long_fn>(::dlsym(woke, "woke_notifications_pushed"));
+    auto f_anim_channels = reinterpret_cast<int_fn>(::dlsym(woke, "woke_animations_channels"));
+    auto f_anim_ticks = reinterpret_cast<long_fn>(::dlsym(woke, "woke_animations_ticks"));
+    auto f_task_probe = reinterpret_cast<int_fn>(::dlsym(woke, "woke_tasks_post_probe"));
+    auto f_task_pending = reinterpret_cast<long_fn>(::dlsym(woke, "woke_tasks_pending"));
+    auto f_task_executed = reinterpret_cast<long_fn>(::dlsym(woke, "woke_tasks_executed"));
+    auto f_task_drain = reinterpret_cast<int_fn>(::dlsym(woke, "woke_tasks_drain"));
+    auto f_task_on_game = reinterpret_cast<int_fn>(::dlsym(woke, "woke_tasks_on_game_thread"));
+    auto f_listeners = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_event_listeners"));
+    auto f_cat_total = reinterpret_cast<int_fn>(::dlsym(woke, "woke_module_category_count_total"));
+    auto f_cat_at = reinterpret_cast<str_arg_fn>(::dlsym(woke, "woke_module_category_at"));
+    auto f_cat_count = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_module_count_in_category"));
+    auto f_cat_enabled = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_module_enabled_in_category"));
+    auto f_set_count = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_module_setting_count"));
+    auto f_set_name = reinterpret_cast<const char* (*)(const char*, int)>(
+        ::dlsym(woke, "woke_module_setting_name"));
+    auto f_set_kind = reinterpret_cast<cstr_cstr_fn>(::dlsym(woke, "woke_module_setting_kind"));
+    auto f_set_bool = reinterpret_cast<cstr_cstr_fn>(::dlsym(woke, "woke_module_setting_bool"));
+    auto f_set_dbl = reinterpret_cast<cstr_dbl_fn>(::dlsym(woke, "woke_module_setting_double"));
+    auto f_put_dbl = reinterpret_cast<cstr_cstr_dbl_fn>(
+        ::dlsym(woke, "woke_module_set_setting_double"));
+    auto f_mod_bind = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_module_keybind"));
+    auto f_mod_set_bind = reinterpret_cast<cstr_int_fn>(::dlsym(woke, "woke_module_set_keybind"));
+    auto f_reset_settings = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_config_reset_settings"));
+
+    check(f_fov && f_set_fov && f_sneak && f_set_sneak && f_page && f_select_page && f_notify &&
+              f_task_probe && f_listeners && f_set_count && f_set_dbl && f_put_dbl &&
+              f_mod_set_bind && f_reset_settings && f_expand && f_gui_expanded,
+          "all new subsystem exports resolve via dlsym");
 
     check(f_status && f_onload && f_onunload && f_mod_count && f_mod_name && f_mod_cat &&
               f_mod_enabled && f_mod_set && f_tick && f_ready && f_fps && f_gamma &&
@@ -222,16 +276,27 @@ int main(int argc, char** argv) {
     check(f_imgui() == 1, "ImGui context created (ready for the click-gui)");
 
     // ---- 3) module registry -------------------------------------------------
-    check(f_mod_count() == 3, "module registry holds 3 built-in modules");
+    check(f_mod_count() == 5, "module registry holds 5 built-in modules");
     const char* n0 = f_mod_name(0);
     const char* n1 = f_mod_name(1);
     const char* n2 = f_mod_name(2);
-    check(n0 && n1 && n2 && std::strcmp(n0, "HUD") == 0 &&
-              std::strcmp(n1, "Fullbright") == 0 && std::strcmp(n2, "Sprint") == 0,
-          "module names in registration order: HUD, Fullbright, Sprint");
-    check(f_mod_cat(0) && f_mod_cat(2) && std::strcmp(f_mod_cat(0), "Render") == 0 &&
-              std::strcmp(f_mod_cat(2), "Movement") == 0,
-          "module categories: Render / Render / Movement");
+    const char* n3 = f_mod_name(3);
+    const char* n4 = f_mod_name(4);
+    check(n0 && n1 && n2 && n3 && n4 && std::strcmp(n0, "HUD") == 0 &&
+              std::strcmp(n1, "Fullbright") == 0 && std::strcmp(n2, "Zoom") == 0 &&
+              std::strcmp(n3, "Sprint") == 0 && std::strcmp(n4, "Sneak") == 0,
+          "module names in registration order: HUD, Fullbright, Zoom, Sprint, Sneak");
+    check(f_mod_cat(0) && f_mod_cat(3) && std::strcmp(f_mod_cat(0), "Visual") == 0 &&
+              std::strcmp(f_mod_cat(3), "Movement") == 0,
+          "module categories: Visual (HUD/Fullbright/Zoom) and Movement (Sprint/Sneak)");
+    check(f_cat_total() == 6 && f_cat_at(0) && std::strcmp(f_cat_at(0), "Combat") == 0 &&
+              std::strcmp(f_cat_at(5), "Visual") == 0,
+          "the six spec categories are exposed in display order");
+    check(f_cat_count("Visual") == 3 && f_cat_count("Movement") == 2 &&
+              f_cat_count("Combat") == 0,
+          "per-category module counts (Visual 3, Movement 2, Combat 0)");
+    check(f_cat_enabled("Visual") == 0 && f_cat_enabled("Movement") == 0,
+          "no module is enabled before any toggle (fresh config)");
     check(f_mod_enabled("DoesNotExist") == -1, "unknown module probes as -1");
     check(f_mod_enabled("Sprint") == 0, "Sprint starts disabled (no config file)");
     check(f_mod_name(99) == nullptr && f_mod_name(-1) == nullptr,
@@ -264,6 +329,14 @@ int main(int argc, char** argv) {
     check(f_set_sprinting(1) == 1 && f_sprinting() == 1, "set_sprinting(1) -> is_sprinting() == 1");
     check(f_set_sprinting(0) == 1 && f_sprinting() == 0, "set_sprinting(0) -> is_sprinting() == 0");
 
+    // fov round-trip through GameOptions.fov (Integer-boxed SimpleOption)
+    check(f_fov() == 70, "fov reads the fixture default (70)");
+    check(f_set_fov(30) == 1 && f_fov() == 30, "fov write/read round-trip (30)");
+
+    // sneaking round-trip through Entity#setSneaking/isSneaking
+    check(f_set_sneak(1) == 1 && f_sneak() == 1, "set_sneaking(1) -> is_sneaking() == 1");
+    check(f_set_sneak(0) == 1 && f_sneak() == 0, "set_sneaking(0) -> is_sneaking() == 0");
+
     // ---- 5) module behavior -------------------------------------------------
     check(f_set_gamma(0.5) == 1, "gamma parked at 0.5 before Fullbright");
     check(f_mod_set("Fullbright", 1) == 1, "Fullbright enabled");
@@ -276,6 +349,19 @@ int main(int argc, char** argv) {
     f_tick();
     check(f_sprinting() == 1, "Sprint on_tick asserts sprinting on the player");
     check(f_mod_set("DoesNotExist", 1) == 0, "set_enabled on unknown module returns 0");
+
+    // Zoom = read-modify-restore of the fov video setting
+    check(f_set_fov(70) == 1, "fov parked at 70 before Zoom");
+    check(f_mod_set("Zoom", 1) == 1, "Zoom enabled");
+    check(f_fov() == 30, "Zoom narrowed fov to its default setting (30)");
+    check(f_mod_set("Zoom", 0) == 1, "Zoom disabled");
+    check(f_fov() == 70, "Zoom restored fov to 70 (read-modify-restore)");
+
+    // Sneak = per-tick assert on Entity#setSneaking
+    check(f_mod_set("Sneak", 1) == 1, "Sneak enabled");
+    f_tick();
+    check(f_sneak() == 1, "Sneak on_tick asserts sneaking on the player");
+    check(f_mod_set("Sneak", 0) == 1, "Sneak disabled");
 
     // ---- 6) config persistence ---------------------------------------------
     check(std::strcmp(f_cfg_path(), config_path) == 0, "config path honors WOKE_CONFIG_PATH");
@@ -306,9 +392,88 @@ int main(int argc, char** argv) {
     int modules_shown = 0;
     int toggles = 0;
     check(f_gui_draw(&modules_shown, &toggles) == 1, "headless click-gui frame rendered");
-    check(modules_shown == 3, "click-gui drew all 3 module rows");
+    check(std::strcmp(f_page(), "Visual") == 0, "dashboard opens on the Visual category page");
+    check(modules_shown == 3, "Visual page drew its 3 module cards");
     check(f_gui_draws() >= 1, "gui draw counter advanced");
+
+    check(f_select_page("Movement") == 1 && std::strcmp(f_page(), "Movement") == 0,
+          "sidebar page switch to Movement");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 2,
+          "Movement page drew its 2 module cards");
+    check(f_select_page("Combat") == 1, "sidebar page switch to the empty Combat category");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 0,
+          "empty category draws no cards (0-badge section)");
+    check(f_select_page("NoSuchPage") == 0, "unknown page name is rejected");
+
+    check(f_select_page("Visual") == 1, "back on the Visual page");
+    f_set_grid(1);
+    check(f_grid() == 1 && f_gui_draw(&modules_shown, &toggles) == 1,
+          "grid view renders the same cards");
+    f_set_grid(0);
+    f_set_search("zoom");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 1,
+          "search filter narrows the list to the matching module");
+    f_set_search("");
+    f_expand("Fullbright");
+    check(std::strcmp(f_gui_expanded(), "Fullbright") == 0,
+          "card expansion follows the chevron state");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 3,
+          "expanded card keeps all Visual cards visible");
     f_gui_set(0);
+
+    // ---- 7b) BaseSetting persistence ---------------------------------------
+    check(f_set_count("Fullbright") == 2, "Fullbright declares 2 typed settings");
+    check(f_set_name("Fullbright", 0) && std::strcmp(f_set_name("Fullbright", 0), "Gamma") == 0,
+          "first Fullbright setting is Gamma");
+    check(f_set_kind("Fullbright", "Gamma") == 2, "Gamma is a decimal setting (kind 2)");
+    check(f_set_kind("Fullbright", "Restore") == 0, "Restore is a boolean setting (kind 0)");
+    check(f_set_dbl("Fullbright", "Gamma") == 16.0, "Gamma defaults to 16.0");
+    check(f_set_bool("Fullbright", "Restore") == 1, "Restore defaults to true");
+    check(f_put_dbl("Fullbright", "Gamma", 8.0) == 1, "Gamma set to 8.0");
+    check(f_set_dbl("Fullbright", "Gamma") == 8.0, "Gamma read back as 8.0");
+    check(f_cfg_save() == 1, "config saved with the new setting value");
+    check(contains(read_all(config_path), "\"Gamma\":8.0"),
+          "config JSON persists the BaseSetting value");
+    check(f_put_dbl("Fullbright", "Gamma", 20.0) == 1, "Gamma changed again (20.0)");
+    check(f_cfg_load() == 1, "config reloaded");
+    check(f_set_dbl("Fullbright", "Gamma") == 8.0, "reload reapplies the persisted setting");
+    check(f_reset_settings("Fullbright") == 1, "setting reset restores exactly one value");
+    check(f_set_dbl("Fullbright", "Gamma") == 16.0, "reset restored the Gamma default");
+
+    // ---- 7c) per-module keybinds -------------------------------------------
+    check(f_mod_bind("Sprint") == 0, "Sprint starts without a keybind");
+    check(f_mod_set_bind("Sprint", 33) == 1 && f_mod_bind("Sprint") == 33,
+          "Sprint keybind set to keycode 33");
+    check(contains(read_all(config_path), "\"Sprint\":33"),
+          "keybind persisted into the config JSON");
+    check(f_mod_set_bind("Sprint", 0) == 1 && f_mod_bind("Sprint") == 0,
+          "keybind cleared with 0");
+
+    // ---- 7d) notifications, animation engine, event bus --------------------
+    const long long pushed_before = f_notif_pushed();
+    check(f_notify("Test", "toast body", 1) == 1, "toast pushed through the exported API");
+    check(f_notify("Second", "toast body", 0) == 1, "second toast pushed");
+    check(f_notif_pushed() == pushed_before + 2, "notification queue counted both toasts");
+    check(f_notif_active() >= 2, "two toasts are active");
+    f_gui_set(0);
+    check(f_wants == nullptr || f_wants() == 1,
+          "dirty GUI state keeps requesting frames (toasts/open animation)");
+    check(f_anim_channels() > 0, "animation controller has registered channels");
+    check(f_gui_draw(&modules_shown, &toggles) == 1, "toast-only frame still renders");
+    check(f_anim_ticks() >= 1, "animation controller ticked at least once");
+    check(f_listeners("module_toggled") >= 1,
+          "module_toggled listener installed by the dashboard");
+    check(f_listeners("frame_tick") == 0, "frame_tick has no listeners yet (decoupled)");
+    check(f_listeners("nope") == -1, "unknown event name reports -1");
+
+    // ---- 7e) game-thread task queue ----------------------------------------
+    check(f_task_on_game() == 0, "this test thread is not the game thread");
+    const long long executed_before = f_task_executed();
+    check(f_task_probe() == 1, "probe job accepted from a foreign thread");
+    check(f_task_pending() == 1, "job waits until the game thread drains");
+    check(f_task_drain() == 1, "drain runs the queued job");
+    check(f_task_executed() == executed_before + 1, "executed counter advanced");
+    check(f_notify(nullptr, nullptr, 9) == 1, "out-of-range toast kind falls back to info");
 
     // ---- 8) teardown --------------------------------------------------------
     f_onunload(vm, nullptr);
@@ -319,7 +484,7 @@ int main(int argc, char** argv) {
     const std::string log = read_all("logs/latest.log");
     check(contains(log, "no JVM present in this process — deferred to JNI_OnLoad"),
           "log: constructor deferred init");
-    check(contains(log, "registered 3 built-in modules"), "log: built-in modules registered");
+    check(contains(log, "registered 5 built-in modules"), "log: built-in modules registered");
     check(contains(log, "Fullbright enabled"), "log: Fullbright enable recorded");
     check(contains(log, "Fullbright disabled"), "log: Fullbright disable recorded");
     check(contains(log, "click-gui opened"), "log: click-gui open recorded");

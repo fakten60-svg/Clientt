@@ -36,8 +36,10 @@
 #include <jni.h>
 
 #include "core/config.hpp"
+#include "core/event_bus.hpp"
 #include "core/filesystem.hpp"
 #include "core/logger.hpp"
+#include "core/task_queue.hpp"
 #include "game/game_state.hpp"
 #include "gui/gui.hpp"
 #include "hook/hook_engine.hpp"
@@ -47,6 +49,8 @@
 #include "jni/reflection_cache.hpp"
 #include "modules/builtin.hpp"
 #include "modules/module.hpp"
+#include "ui/animation.hpp"
+#include "ui/notifications.hpp"
 
 #ifndef WOKE_VERSION
 #define WOKE_VERSION "0.1.0-dev"
@@ -293,6 +297,13 @@ void jni_shutdown() {
     // so no detour can fire into a destroyed context.
     woke::hook::engine_shutdown();
     woke::hook::present_shutdown();
+
+    // UI subsystems hold no JVM state, but they must not survive the unload:
+    // toasts and animation channels would otherwise reference unmapped code.
+    woke::ui::notification_queue::instance().clear();
+    woke::ui::animation_controller::instance().clear();
+    woke::core::task_queue::instance().clear();
+    woke::core::event_bus::clear();
 
     g_vm = nullptr;
     g_state.store(kDetached, std::memory_order_release);
@@ -574,6 +585,18 @@ WOKE_API int woke_game_is_sprinting() {
 WOKE_API int woke_game_set_sprinting(int on) {
     return woke::game::game_state::instance().set_sprinting(on != 0) ? 1 : 0;
 }
+WOKE_API int woke_game_fov() {
+    return woke::game::game_state::instance().fov();
+}
+WOKE_API int woke_game_set_fov(int fov) {
+    return woke::game::game_state::instance().set_fov(fov) ? 1 : 0;
+}
+WOKE_API int woke_game_is_sneaking() {
+    return woke::game::game_state::instance().is_sneaking() ? 1 : 0;
+}
+WOKE_API int woke_game_set_sneaking(int on) {
+    return woke::game::game_state::instance().set_sneaking(on != 0) ? 1 : 0;
+}
 
 // ---- click-gui -------------------------------------------------------------
 WOKE_API int woke_gui_is_open() {
@@ -606,6 +629,226 @@ WOKE_API int woke_gui_draw_frame(int* modules_shown, int* toggles) {
 }
 WOKE_API long long woke_gui_draw_count() {
     return woke::gui::draw_count();
+}
+
+// ---- module categories + settings ------------------------------------------
+WOKE_API int woke_module_category_count_total() {
+    return static_cast<int>(woke::modules::kCategoryCount);
+}
+
+WOKE_API const char* woke_module_category_at(int index) {
+    return (index >= 0 && index < static_cast<int>(woke::modules::kCategoryCount))
+               ? woke::modules::kCategories[index]
+               : nullptr;
+}
+
+WOKE_API int woke_module_count_in_category(const char* category) {
+    return (category != nullptr) ? woke::modules::category_module_count(category) : 0;
+}
+
+WOKE_API int woke_module_enabled_in_category(const char* category) {
+    return (category != nullptr) ? woke::modules::category_enabled_count(category) : 0;
+}
+
+WOKE_API int woke_module_setting_count(const char* module_name) {
+    const woke::modules::module* m =
+        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
+                                : nullptr;
+    return (m != nullptr) ? static_cast<int>(m->settings().size()) : -1;
+}
+
+WOKE_API const char* woke_module_setting_name(const char* module_name, int index) {
+    const woke::modules::module* m =
+        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
+                                : nullptr;
+    if (m == nullptr || index < 0) {
+        return nullptr;
+    }
+    const woke::core::base_setting* s = m->settings().at(static_cast<std::size_t>(index));
+    return (s != nullptr) ? s->name().c_str() : nullptr;
+}
+
+// 0=boolean 1=integer 2=decimal 3=color 4=text, -1 unknown.
+WOKE_API int woke_module_setting_kind(const char* module_name, const char* setting_name) {
+    const woke::modules::module* m =
+        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
+                                : nullptr;
+    if (m == nullptr || setting_name == nullptr) {
+        return -1;
+    }
+    const woke::core::base_setting* s = m->settings().find(setting_name);
+    return (s != nullptr) ? static_cast<int>(s->type()) : -1;
+}
+
+WOKE_API int woke_module_setting_bool(const char* module_name, const char* setting_name) {
+    const woke::modules::module* m =
+        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
+                                : nullptr;
+    if (m == nullptr || setting_name == nullptr) {
+        return -1;
+    }
+    const woke::core::base_setting* s = m->settings().find(setting_name);
+    if (s == nullptr || s->type() != woke::core::setting_type::boolean) {
+        return -1;
+    }
+    return s->to_value().boolean ? 1 : 0;
+}
+
+WOKE_API double woke_module_setting_double(const char* module_name, const char* setting_name) {
+    const woke::modules::module* m =
+        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
+                                : nullptr;
+    if (m == nullptr || setting_name == nullptr) {
+        return 0.0;
+    }
+    const woke::core::base_setting* s = m->settings().find(setting_name);
+    if (s == nullptr) {
+        return 0.0;
+    }
+    const woke::core::setting_value v = s->to_value();
+    return (v.type == woke::core::setting_type::decimal) ? v.decimal
+                                                        : static_cast<double>(v.integer);
+}
+
+WOKE_API int woke_module_set_setting_double(const char* module_name, const char* setting_name,
+                                            double value) {
+    woke::modules::module* m =
+        (module_name != nullptr) ? woke::modules::module_registry::instance().find(module_name)
+                                : nullptr;
+    if (m == nullptr || setting_name == nullptr) {
+        return 0;
+    }
+    woke::core::base_setting* s = m->settings().find(setting_name);
+    if (s == nullptr) {
+        return 0;
+    }
+    woke::core::setting_value v = s->to_value();
+    if (v.type == woke::core::setting_type::decimal) {
+        v.decimal = value;
+    } else {
+        v.integer = static_cast<long long>(value);
+    }
+    s->from_value(v);
+    return 1;
+}
+
+WOKE_API int woke_module_keybind(const char* module_name) {
+    return (module_name != nullptr) ? woke::config::module_keybind(module_name) : 0;
+}
+
+WOKE_API int woke_module_set_keybind(const char* module_name, int keycode) {
+    return woke::config::set_module_keybind(module_name, keycode) ? 1 : 0;
+}
+
+WOKE_API int woke_config_reset_settings(const char* module_name) {
+    return woke::config::reset_settings(module_name);
+}
+
+// ---- UI subsystems ---------------------------------------------------------
+WOKE_API int woke_gui_select_page(const char* page) {
+    return woke::gui::select_page(page) ? 1 : 0;
+}
+WOKE_API const char* woke_gui_page() {
+    return woke::gui::current_page();
+}
+WOKE_API void woke_gui_set_search(const char* text) {
+    woke::gui::set_search(text);
+}
+WOKE_API const char* woke_gui_search() {
+    return woke::gui::search_query();
+}
+WOKE_API void woke_gui_set_grid(int grid) {
+    woke::gui::set_grid_view(grid != 0);
+}
+WOKE_API int woke_gui_grid() {
+    return woke::gui::grid_view() ? 1 : 0;
+}
+WOKE_API void woke_gui_expand(const char* module_name) {
+    woke::gui::set_expanded(module_name);
+}
+WOKE_API const char* woke_gui_expanded() {
+    return woke::gui::expanded();
+}
+WOKE_API int woke_gui_wants_frames() {
+    return woke::gui::wants_frames() ? 1 : 0;
+}
+
+// Toast notifications (kind: 0 info, 1 success, 2 warning, 3 error).
+WOKE_API int woke_notify(const char* title, const char* message, int kind) {
+    const auto k = (kind >= 0 && kind <= 3) ? static_cast<woke::ui::toast_kind>(kind)
+                                            : woke::ui::toast_kind::info;
+    woke::ui::notification_queue::instance().push(k, title, message);
+    return 1;
+}
+WOKE_API int woke_notifications_active() {
+    return static_cast<int>(woke::ui::notification_queue::instance().active());
+}
+WOKE_API long long woke_notifications_pushed() {
+    return woke::ui::notification_queue::instance().pushed_count();
+}
+
+// Animation engine introspection.
+WOKE_API int woke_animations_channels() {
+    return static_cast<int>(woke::ui::animation_controller::instance().channel_count());
+}
+WOKE_API long long woke_animations_ticks() {
+    return woke::ui::animation_controller::instance().tick_count();
+}
+WOKE_API float woke_animations_last_dt() {
+    return woke::ui::animation_controller::instance().last_dt();
+}
+
+// Game-thread task queue. woke_tasks_post_probe enqueues a job that only
+// increments the executed counter — used by tests to prove that work posted
+// from a foreign thread runs on the frame thread.
+WOKE_API int woke_tasks_post_probe() {
+    return woke::core::task_queue::instance().post([] {
+        WOKE_DEBUG("core", "probe task executed on the game thread");
+    })
+               ? 1
+               : 0;
+}
+WOKE_API long long woke_tasks_pending() {
+    return static_cast<long long>(woke::core::task_queue::instance().pending());
+}
+WOKE_API long long woke_tasks_posted() {
+    return woke::core::task_queue::instance().posted_count();
+}
+WOKE_API long long woke_tasks_executed() {
+    return woke::core::task_queue::instance().executed_count();
+}
+WOKE_API long long woke_tasks_dropped() {
+    return woke::core::task_queue::instance().dropped_count();
+}
+WOKE_API int woke_tasks_drain() {
+    return static_cast<int>(woke::core::task_queue::instance().drain());
+}
+WOKE_API int woke_tasks_on_game_thread() {
+    return woke::core::task_queue::instance().on_game_thread() ? 1 : 0;
+}
+
+// Event bus listener counts by event name ("module_toggled", "frame_tick",
+// "gui_visibility_changed", "config_persisted"); -1 for an unknown name.
+WOKE_API int woke_event_listeners(const char* event_name) {
+    if (event_name == nullptr) {
+        return -1;
+    }
+    const std::string name = event_name;
+    if (name == "module_toggled") {
+        return static_cast<int>(woke::core::event_bus::listener_count<woke::core::module_toggled>());
+    }
+    if (name == "frame_tick") {
+        return static_cast<int>(woke::core::event_bus::listener_count<woke::core::frame_tick>());
+    }
+    if (name == "gui_visibility_changed") {
+        return static_cast<int>(
+            woke::core::event_bus::listener_count<woke::core::gui_visibility_changed>());
+    }
+    if (name == "config_persisted") {
+        return static_cast<int>(
+            woke::core::event_bus::listener_count<woke::core::config_persisted>());
+    }
+    return -1;
 }
 
 // ---- config ----------------------------------------------------------------
