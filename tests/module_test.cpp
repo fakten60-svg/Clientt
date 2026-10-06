@@ -222,11 +222,21 @@ int main(int argc, char** argv) {
     auto f_mod_bind = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_module_keybind"));
     auto f_mod_set_bind = reinterpret_cast<cstr_int_fn>(::dlsym(woke, "woke_module_set_keybind"));
     auto f_reset_settings = reinterpret_cast<cstr_fn>(::dlsym(woke, "woke_config_reset_settings"));
+    auto f_choices = reinterpret_cast<int (*)(const char*, const char*)>(
+        ::dlsym(woke, "woke_module_setting_choice_count"));
+    auto f_choice_label = reinterpret_cast<const char* (*)(const char*, const char*, int)>(
+        ::dlsym(woke, "woke_module_setting_choice_label"));
+    auto f_choice = reinterpret_cast<int (*)(const char*, const char*)>(
+        ::dlsym(woke, "woke_module_setting_choice"));
+    auto f_set_choice = reinterpret_cast<int (*)(const char*, const char*, int)>(
+        ::dlsym(woke, "woke_module_set_setting_choice"));
 
     check(f_fov && f_set_fov && f_sneak && f_set_sneak && f_page && f_select_page && f_notify &&
               f_task_probe && f_listeners && f_set_count && f_set_dbl && f_put_dbl &&
               f_mod_set_bind && f_reset_settings && f_expand && f_gui_expanded,
           "all new subsystem exports resolve via dlsym");
+    check(f_choices && f_choice_label && f_choice && f_set_choice,
+          "mode-dropdown setting exports resolve via dlsym");
 
     check(f_status && f_onload && f_onunload && f_mod_count && f_mod_name && f_mod_cat &&
               f_mod_enabled && f_mod_set && f_tick && f_ready && f_fps && f_gamma &&
@@ -439,6 +449,32 @@ int main(int argc, char** argv) {
     check(f_set_dbl("Fullbright", "Gamma") == 8.0, "reload reapplies the persisted setting");
     check(f_reset_settings("Fullbright") == 1, "setting reset restores exactly one value");
     check(f_set_dbl("Fullbright", "Gamma") == 16.0, "reset restored the Gamma default");
+
+    // ---- 7b2) mode dropdown setting (HUD Corner) ----------------------------
+    // Corner is the spec's Mode Dropdown kind: integer-backed with named
+    // choices, edited through a combo box instead of a numeric slider.
+    check(f_set_count("HUD") == 3, "HUD declares 3 typed settings");
+    check(f_set_kind("HUD", "Corner") == 1, "Corner is an integer-backed setting (kind 1)");
+    check(f_choices("HUD", "Corner") == 4, "Corner exposes its 4 named dropdown choices");
+    check(f_choice_label("HUD", "Corner", 0) != nullptr &&
+              std::strcmp(f_choice_label("HUD", "Corner", 0), "Top Left") == 0 &&
+              f_choice_label("HUD", "Corner", 1) != nullptr &&
+              std::strcmp(f_choice_label("HUD", "Corner", 1), "Top Right") == 0,
+          "Corner choice labels: Top Left / Top Right at 0/1");
+    check(f_choice_label("HUD", "Corner", 4) == nullptr,
+          "out-of-range choice index returns null");
+    check(f_choice("HUD", "Corner") == 0, "Corner defaults to index 0 (Top Left)");
+    check(f_set_choice("HUD", "Corner", 3) == 1, "Corner selectable by index");
+    check(f_choice("HUD", "Corner") == 3, "Corner selection read back as 3");
+    check(f_cfg_save() == 1, "config saved with the dropdown selection");
+    check(contains(read_all(config_path), "\"Corner\":3"),
+          "config JSON persists the dropdown selection");
+    check(f_set_choice("HUD", "Corner", 9) == 0, "out-of-range selection is rejected");
+    check(f_choice("HUD", "Corner") == 3, "rejected selection leaves the value unchanged");
+    check(f_choice("Fullbright", "Gamma") == -1, "non-dropdown setting reports -1");
+    check(f_choices("Fullbright", "Gamma") == 0, "non-dropdown exposes 0 choices");
+    check(f_reset_settings("HUD") == 1, "HUD setting reset works");
+    check(f_choice("HUD", "Corner") == 0, "reset restores the dropdown default (Top Left)");
 
     // ---- 7c) per-module keybinds -------------------------------------------
     check(f_mod_bind("Sprint") == 0, "Sprint starts without a keybind");

@@ -15,6 +15,13 @@
 #include <sys/syscall.h>   // SYS_gettid
 #include <unistd.h>        // ::syscall
 
+// Must survive -fvisibility=hidden: the JVM and the dlopen-based tests resolve
+// the woke_* / JNI_OnLoad symbols by name, so every exported definition carries
+// this attribute (the CMake target compiles with -fvisibility=hidden).
+#ifndef WOKE_API
+#define WOKE_API __attribute__((visibility("default")))
+#endif
+
 namespace woke::platform {
 
 // Kernel thread id of the calling thread — cheap enough for every log line.

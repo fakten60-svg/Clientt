@@ -48,7 +48,6 @@ public:
         if (!watermark_.value()) {
             return;
         }
-        // Corner choice mirrors the sidebar's "position" mode dropdown.
         const float pad = 12.0f;
         const ImGuiIO& io = ImGui::GetIO();
         float x = pad;
@@ -80,7 +79,8 @@ public:
 private:
     core::setting<bool> watermark_{"Watermark", "Draw the on-screen watermark", true};
     core::setting<bool> show_fps_{"Show FPS", "Include the client FPS readout", true};
-    core::setting<int> corner_{"Corner", "0=TL 1=TR 2=BL 3=BR", 0, 0, 3};
+    core::mode_setting corner_{"Corner", "Watermark position on screen",
+                               {"Top Left", "Top Right", "Bottom Left", "Bottom Right"}, 0};
 };
 
 // ---- Visual: Fullbright ----------------------------------------------------

@@ -19,6 +19,7 @@
 // ============================================================================
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -61,6 +62,18 @@ public:
     virtual setting_value to_value() const = 0;
     virtual void from_value(const setting_value& v) = 0;
     virtual void reset() = 0;
+
+    // Numeric bounds for slider rendering (max <= min means "unranged").
+    virtual double numeric_min() const { return 0.0; }
+    virtual double numeric_max() const { return 0.0; }
+
+    // Mode dropdowns expose their named choices here; 0 choices means the
+    // setting renders as a slider/checkbox instead of a combo.
+    virtual int choice_count() const { return 0; }
+    virtual const char* choice_label(int index) const {
+        (void)index;
+        return nullptr;
+    }
 
     // True when the value changed since the last clear_dirty().
     bool dirty() const { return dirty_; }
@@ -106,6 +119,9 @@ public:
     T default_value() const { return default_; }
     T min_value() const { return min_; }
     T max_value() const { return max_; }
+
+    double numeric_min() const override { return static_cast<double>(min_); }
+    double numeric_max() const override { return static_cast<double>(max_); }
 
     // Returns true when the value actually changed.
     bool set(T v) {
@@ -215,6 +231,13 @@ public:
         return false;
     }
 
+    template <typename T>
+    setting<T>* find_typed(const std::string& name) {
+        base_setting* s = find(name);
+        return (s != nullptr && s->type() == type_of<T>()) ? dynamic_cast<setting<T>*>(s)
+                                                          : nullptr;
+    }
+
     void clear_dirty() {
         for (base_setting* s : settings_) {
             if (s != nullptr) {
@@ -233,6 +256,93 @@ public:
 
 private:
     std::vector<base_setting*> settings_;
+};
+
+// Mode dropdown: an integer-backed setting whose value indexes a fixed list of
+// named choices. Serializes as its integer index, so the config engine needs
+// no special handling and the dashboard renders a combo box instead of a
+// numeric slider (choice_count() > 0 drives that switch).
+class mode_setting final : public base_setting {
+public:
+    mode_setting(std::string name, std::string description, std::initializer_list<const char*> choices,
+                 int default_index)
+        : base_setting(std::move(name), std::move(description), setting_type::integer),
+          count_(choices.size() > kMaxChoices ? kMaxChoices : choices.size()) {
+        int i = 0;
+        for (const char* c : choices) {
+            if (static_cast<std::size_t>(i) >= count_) {
+                break;
+            }
+            choices_[static_cast<std::size_t>(i)] = c;
+            ++i;
+        }
+        default_ = (default_index >= 0 && static_cast<std::size_t>(default_index) < count_)
+                       ? default_index
+                       : 0;
+        value_ = default_;
+    }
+
+    int value() const { return value_; }
+    int default_index() const { return default_; }
+    int count() const { return static_cast<int>(count_); }
+
+    const char* label() const {
+        return (count_ == 0) ? "" : choices_[static_cast<std::size_t>(value_)].c_str();
+    }
+    const char* label(int index) const {
+        return (index >= 0 && static_cast<std::size_t>(index) < count_)
+                   ? choices_[static_cast<std::size_t>(index)].c_str()
+                   : nullptr;
+    }
+
+    // Selects a choice by index. false only when out of range; re-selecting
+    // the current value is a successful no-op.
+
+    bool set(int index) {
+        if (index < 0 || static_cast<std::size_t>(index) >= count_) {
+            return false;   // out of range: rejected
+        }
+        if (index == value_) {
+            return true;    // already selected — no-op, not an error
+        }
+        value_ = index;
+        mark_dirty();
+        if (on_change_) {
+            on_change_();
+        }
+        return true;
+    }
+
+    void on_change(std::function<void()> fn) { on_change_ = std::move(fn); }
+
+    setting_value to_value() const override {
+        setting_value out;
+        out.type = setting_type::integer;
+        out.integer = static_cast<long long>(value_);
+        return out;
+    }
+
+    void from_value(const setting_value& v) override {
+        const long long idx = v.integer;
+        if (idx >= 0 && static_cast<std::size_t>(idx) < count_) {
+            set(static_cast<int>(idx));
+        }
+        clear_dirty();   // loading is not a user edit
+    }
+
+    void reset() override { set(default_); }
+
+    int choice_count() const override { return static_cast<int>(count_); }
+    const char* choice_label(int index) const override { return label(index); }
+
+private:
+    static constexpr std::size_t kMaxChoices = 8;
+
+    std::array<std::string, kMaxChoices> choices_{};
+    std::size_t count_ = 0;
+    int default_ = 0;
+    int value_ = 0;
+    std::function<void()> on_change_;
 };
 
 } // namespace woke::core
