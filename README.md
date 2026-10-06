@@ -16,7 +16,7 @@ Produces a single shared object: **`libwoke.so`**.
 | Present hook | MinHook detour on `glXSwapBuffers`, always chaining to the original; timestamps its own work to keep per-frame overhead measurable |
 | Overlay | Dear ImGui 1.92 **macOS dashboard** click-gui (traffic-light title bar, category sidebar, searchable module cards with Apple-style pill toggles, grid/list view, toasts, live metrics footer). When the GUI is closed and no animation/toast is settling the detour performs **zero** ImGui work (draw-call suppression) |
 | Input | Keybind edge-detection via `XQueryKeymap` on the game's X11 `Display`; pointer state via `XQueryPointer` |
-| Modules | 11 built-ins across 6 spec categories — Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem (Combat); HUD, Fullbright, Zoom (Visual); Sprint, Sneak (Movement). Each has typed `BaseSetting`s; combat automations only reuse the vanilla attack/swap paths |
+| Modules | 18 built-ins across 6 spec categories — Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor (Combat); Auto Mace (Mace); Spear Lunge (Spear); HUD, Fullbright, Zoom (Visual); Sprint, Sneak (Movement). Each has typed `BaseSetting`s; combat automations only reuse the vanilla attack/use/swap paths |
 | Config | `woke.wtf/config.v1` JSON — module states, per-module `settings`, per-module `keybinds`, and the GUI keybind; written on every toggle/edit |
 | Subsystems | Decoupled type-safe `core::event_bus`, main-thread `core::task_queue`, `ui::notification_queue` toasts, `ui::animation_controller` (spring/easing), `ui::theme` palette, `utils::render`/`utils::math` stateless helpers |
 
@@ -69,6 +69,13 @@ Six categories are always present in the sidebar (`Combat`, `Mace`, `Misc`,
 | KillAura | Combat | Per-tick scan of the client world for the nearest living entity in reach, attacked through the same vanilla call pair (no aim assist — aiming stays with the player); Reach + CPS settings |
 | W-Tap | Combat | Listens for automated attacks on the event bus and taps sprint off/on around them for the vanilla sprint-knockback bonus (client movement state only) |
 | Auto Totem | Combat | Watches the offhand and swaps a totem of undying in from the main inventory through the vanilla `clickSlot(SWAP)` inventory click |
+| Triggerbot | Combat | Attacks the moment the crosshair rests on a valid target and the vanilla charge passes the configured threshold |
+| AimAssist | Combat | Steers the LOCAL view rotation toward the nearest target in reach — FOV-cone gated, bounded degrees-per-tick step, never a snap; plain client rotation state |
+| Auto Hit Crystal | Combat | Scans the world for the nearest End Crystal in reach and attacks it through the vanilla attack call pair |
+| Anchor Macro | Combat | Repeats the vanilla `interactBlock` use-click on the crosshair block while a respawn anchor is held (place/charge/detonate is the game's own decision) |
+| SafeAnchor | Combat | Watchdog: disables Anchor Macro once the player's health drops below the configured threshold |
+| Auto Mace | Mace | Attacks the crosshair target while falling at least the configured distance — timed for the mace smite window; optionally requires the mace |
+| Spear Lunge | Spear | Attacks the crosshair target and boosts the player's own velocity along the look vector (`Entity.setVelocity`, the vanilla movement-state write) |
 | HUD | Visual | Draws a watermark (optionally with live FPS) in a configurable corner (mode dropdown) |
 | Fullbright | Visual | Read-modify-restore of the `gamma` video setting |
 | Zoom | Visual | Read-modify-restore of the `fov` video setting (`Integer`-boxed `SimpleOption`) |
@@ -199,7 +206,7 @@ src/jni/                     mappings.json parser + jclass/jmethodID/jfieldID ca
 src/game/game_state.*        client-state layer (client/player/options, fps, gamma, fov, sprint/sneak)
 src/game/game_combat.cpp     combat accessors: crosshair target, attack cooldown, nearest-target scan, vanilla attack path, offhand totem
 src/modules/module.*         BaseModule lifecycle + registry + categories
-src/modules/builtin.*        built-ins: Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, HUD, Fullbright, Zoom, Sprint, Sneak
+src/modules/builtin.*        built-ins: Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap, Auto Totem, Triggerbot, AimAssist, Auto Hit Crystal, Anchor Macro, SafeAnchor, Auto Mace, Spear Lunge, HUD, Fullbright, Zoom, Sprint, Sneak
 src/ui/theme.*               macOS palette + geometry + ImGui style
 src/ui/animation.*           AnimationController (spring_value, animated_value, easing curves)
 src/ui/component.*           reusable ImGui widgets (traffic light, toggle, search field, ...)
@@ -255,8 +262,12 @@ toasts, the animation controller, event-bus listener counts and the task queue.
 It also drives the combat set against fixture entities: crosshair-target health
 reads, the one-attack-per-rate-window Auto Clicker behavior, the KillAura
 nearest-entity attack, the W-Tap sprint tap/re-assert cycle, the Auto Totem
-offhand-totem probe, the self-attack guard and the ignore path for non-entity
-crosshair targets.
+offhand-totem probe, the Triggerbot charge-gated crosshair attack, the
+AimAssist cone gate + bounded rotation step, the Auto Hit Crystal
+crystal-only scan, the Anchor Macro vanilla use-click (with and without the
+anchor held), the SafeAnchor low-health watchdog, the Auto Mace fall gate and
+the Spear Lunge velocity boost + cooldown, plus the self-attack guard and the
+ignore path for non-entity crosshair targets.
 
 The GL renderer branch (`gl` mode) is only exercised against a real GLX context
 and is not covered by the headless suites.

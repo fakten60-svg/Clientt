@@ -1,7 +1,9 @@
 // ============================================================================
 //  woke.wtf — src/modules/builtin.hpp
 //  Built-in module registration (HUD, Fullbright, Zoom, Sprint, Sneak + the
-//  combat set: Target HUD, Attack Cooldown, Auto Clicker).
+//  combat set: Target HUD, Attack Cooldown, Auto Clicker, KillAura, W-Tap,
+//  Auto Totem + the pvp set: Triggerbot, AimAssist, Auto Hit Crystal,
+//  Anchor Macro, SafeAnchor + the weapon set: Auto Mace, Spear Lunge).
 // ============================================================================
 #pragma once
 
@@ -11,9 +13,18 @@
 
 namespace woke::modules {
 
-// Registers the combat set (Target HUD, Attack Cooldown, Auto Clicker).
-// Called by register_builtins(); idempotent. Split into its own TU so the
-// per-file size stays within the hygiene standard.
+// Registers the classic combat set (Target HUD, Attack Cooldown, Auto Clicker,
+// KillAura, W-Tap, Auto Totem). Called by register_builtins(); idempotent.
+// Split into its own TU so the per-file size stays within the hygiene standard.
 void register_combat_builtins();
+
+// Registers the pvp combat automations (Triggerbot, AimAssist, Auto Hit
+// Crystal, Anchor Macro, SafeAnchor). Called by register_builtins();
+// idempotent; own TU for the same size reason.
+void register_pvp_builtins();
+
+// Registers the weapon automations (Auto Mace, Spear Lunge). Called by
+// register_builtins(); idempotent; own TU for the same size reason.
+void register_gear_builtins();
 
 } // namespace woke::modules
