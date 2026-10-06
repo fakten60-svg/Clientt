@@ -4,8 +4,9 @@
 //
 //    __attribute__((constructor))  — unique timestamped session log under
 //                                    logs/ + latest.log symlink + bootstrap
-//                                    messages, then auto-attach to a running
-//                                    JVM if one already exists (injection).
+//                                    messages, then arm the deferred-init
+//                                    worker when a JVM already exists
+//                                    (pure injection: no JNI_OnLoad coming).
 //    JNI_OnLoad()                  — JVM-driven entry (System.loadLibrary and
 //                                    manual test calls): attach the thread,
 //                                    parse mappings.json, populate the JNI
@@ -22,12 +23,14 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 #include <jni.h>
@@ -38,6 +41,7 @@
 #include "game/game_state.hpp"
 #include "gui/gui.hpp"
 #include "hook/hook_engine.hpp"
+#include "hook/imgui_backend.hpp"
 #include "hook/present_hook.hpp"
 #include "jni/mappings.hpp"
 #include "jni/reflection_cache.hpp"
@@ -66,6 +70,13 @@ std::atomic<int> g_state{kDetached};
 std::mutex g_lifecycle_mutex;
 JavaVM* g_vm = nullptr;                            // guarded by g_lifecycle_mutex
 woke::jni::mappings_db g_mappings;                 // survives unload (reused)
+
+// Deferred-init worker state (see start_deferred_init).
+std::mutex g_defer_mutex;
+std::condition_variable g_defer_cv;
+std::atomic<bool> g_defer_stop{false};
+std::atomic<bool> g_defer_armed{false};
+std::thread g_defer_thread;
 
 const char* mappings_path() {
     const char* p = std::getenv("WOKE_MAPPINGS_PATH");
@@ -162,8 +173,95 @@ bool jni_startup(JavaVM* vm) {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Deferred-init worker (pure-injection mode).
+//
+// When the client is dlopen'd into an already-running JVM, JNI_OnLoad never
+// fires, so nothing would ever call jni_startup(). The constructor cannot do
+// the work itself: it runs under glibc's loader lock and the reflection cache
+// calls FindClass, which may need to dlopen a jar while we hold that lock.
+//
+// The worker therefore waits out a grace period first — long enough for a
+// plain System.loadLibrary to deliver its JNI_OnLoad, and long enough that our
+// own dlopen has returned before any JNI call happens. Whatever runs first
+// wins; jni_startup() is mutex-guarded and idempotent either way.
+// ---------------------------------------------------------------------------
+constexpr int kDeferGraceDefaultMs = 1500;
+
+int defer_grace_ms() {
+    const char* env = std::getenv("WOKE_DEFER_GRACE_MS");
+    if (env != nullptr && env[0] != '\0') {
+        char* end = nullptr;
+        const long value = std::strtol(env, &end, 10);
+        if (end != env && value >= 0 && value <= 60000) {
+            return static_cast<int>(value);
+        }
+    }
+    return kDeferGraceDefaultMs;
+}
+
+void deferred_init_worker(JavaVM* vm) {
+    {
+        std::unique_lock<std::mutex> lock(g_defer_mutex);
+        if (g_defer_cv.wait_for(lock, std::chrono::milliseconds(defer_grace_ms()),
+                                [] { return g_defer_stop.load(std::memory_order_acquire); })) {
+            return;   // JNI_OnLoad or unload claimed the process first
+        }
+    }
+    if (g_defer_stop.load(std::memory_order_acquire) ||
+        g_state.load(std::memory_order_acquire) != kDetached) {
+        return;
+    }
+    WOKE_INFO("jni", "no JNI_OnLoad after %d ms — pure injection detected, "
+                     "running deferred initialization",
+              defer_grace_ms());
+    if (!jni_startup(vm)) {
+        WOKE_ERROR("jni", "deferred initialization failed for JVM %p",
+                   static_cast<void*>(vm));
+        return;
+    }
+    WOKE_INFO("jni", "deferred initialization complete (state=%d) — injected client ready",
+              g_state.load(std::memory_order_acquire));
+}
+
+// Arms the worker once. Safe from the loader constructor: it only spawns a
+// thread that sleeps before touching the JVM.
+void start_deferred_init(JavaVM* vm) {
+    std::lock_guard<std::mutex> lock(g_defer_mutex);
+    if (g_defer_armed.load(std::memory_order_relaxed)) {
+        return;
+    }
+    g_defer_stop.store(false, std::memory_order_relaxed);
+    g_defer_thread = std::thread(deferred_init_worker, vm);
+    g_defer_armed.store(true, std::memory_order_release);
+}
+
+// Wakes and joins the worker. Idempotent; never holds g_lifecycle_mutex, so it
+// cannot deadlock against a worker that is inside jni_startup().
+void stop_deferred_init() {
+    {
+        std::lock_guard<std::mutex> lock(g_defer_mutex);
+        if (!g_defer_armed.load(std::memory_order_relaxed)) {
+            return;
+        }
+        g_defer_stop.store(true, std::memory_order_release);
+    }
+    g_defer_cv.notify_all();
+    if (g_defer_thread.joinable()) {
+        g_defer_thread.join();
+    }
+    g_defer_armed.store(false, std::memory_order_release);
+}
+
+bool deferred_init_armed() {
+    return g_defer_armed.load(std::memory_order_acquire);
+}
+
 // Shared by JNI_OnUnload and the dlclose destructor — idempotent.
 void jni_shutdown() {
+    // Join the worker first: it may be inside jni_startup() holding
+    // g_lifecycle_mutex, and it must not race the teardown below.
+    stop_deferred_init();
     std::lock_guard<std::mutex> lock(g_lifecycle_mutex);
     if (g_state.load(std::memory_order_acquire) == kDetached) {
         return;
@@ -203,12 +301,11 @@ void jni_shutdown() {
               g_mappings.class_count());
 }
 
-// Detect-only probe for the injection case (JNI_OnLoad never fires for an
-// injected .so). CRITICAL: this must NOT run JVM classloading — FindClass
-// inside a dlopen constructor deadlocks against glibc's loader lock (the
-// classloader may need to dlopen while our constructor holds the lock).
-// All heavy initialization therefore happens in JNI_OnLoad; a deferred-init
-// worker thread for pure-injection setups lands in a later phase.
+// Probe for the injection case (JNI_OnLoad never fires for an injected .so).
+// CRITICAL: this must NOT run JVM classloading — FindClass inside a dlopen
+// constructor deadlocks against glibc's loader lock (the classloader may need
+// to dlopen while our constructor holds the lock). So a JVM found here only
+// arms the deferred-init worker, which sleeps before doing any JNI work.
 void probe_jvm_for_deferred_init() {
     using get_created_vms = jint(JNICALL*)(JavaVM**, jsize, jsize*);
     auto get_vms = reinterpret_cast<get_created_vms>(
@@ -225,6 +322,10 @@ void probe_jvm_for_deferred_init() {
     }
     WOKE_INFO("jni", "JVM present — deferring initialization to JNI_OnLoad "
                      "(no JVM work in the load constructor)");
+    start_deferred_init(vms[0]);
+    WOKE_INFO("jni", "deferred-init worker armed (grace %d ms) — covers pure-injection "
+                     "setups where JNI_OnLoad never fires",
+              defer_grace_ms());
 }
 
 } // namespace
@@ -275,6 +376,9 @@ WOKE_API jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
         WOKE_ERROR("jni", "JNI_OnLoad called with null JavaVM");
         return JNI_ERR;
     }
+    // The JVM is driving us, so the deferred-init worker is not needed; join it
+    // before initializing so the two paths cannot interleave.
+    stop_deferred_init();
     if (!jni_startup(vm)) {
         return JNI_ERR;
     }
@@ -292,6 +396,11 @@ WOKE_API void JNICALL JNI_OnUnload(JavaVM* vm, void* reserved) {
 
 WOKE_API int woke_jni_status() {
     return g_state.load(std::memory_order_acquire);
+}
+
+// 1 while the pure-injection deferred-init worker is armed.
+WOKE_API int woke_jni_deferred_armed() {
+    return deferred_init_armed() ? 1 : 0;
 }
 
 WOKE_API long woke_mappings_class_count() {
@@ -384,6 +493,26 @@ WOKE_API void woke_hook_set_gui_open(int open) {
     woke::hook::set_gui_open(open != 0);
 }
 
+// Renderer mode: 0 = idle (no frame drawn yet), 1 = OpenGL3 attached,
+// 2 = CPU-only bare mode.
+WOKE_API int woke_hook_backend_status() {
+    return static_cast<int>(woke::hook::backend::current_mode());
+}
+
+// Last known drawable size (XGetGeometry of the swap drawable).
+WOKE_API void woke_hook_display_size(int* width, int* height) {
+    if (width != nullptr) {
+        *width = woke::hook::backend::display_width();
+    }
+    if (height != nullptr) {
+        *height = woke::hook::backend::display_height();
+    }
+}
+
+WOKE_API long long woke_hook_input_updates() {
+    return woke::hook::backend::input_update_count();
+}
+
 // ---- module registry -------------------------------------------------------
 WOKE_API int woke_module_count() {
     return static_cast<int>(woke::modules::module_registry::instance().all().size());
@@ -462,7 +591,11 @@ WOKE_API int woke_gui_draw_frame(int* modules_shown, int* toggles) {
     if (!woke::hook::imgui_initialized()) {
         return 0;   // no ImGui context — nothing to draw
     }
+    const long long draws_before = woke::gui::draw_count();
     const woke::gui::draw_stats st = woke::gui::render_frame();
+    if (woke::gui::draw_count() == draws_before) {
+        return 0;   // refused: the client renders through GL, no headless frame
+    }
     if (modules_shown != nullptr) {
         *modules_shown = st.modules_shown;
     }

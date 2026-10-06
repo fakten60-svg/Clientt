@@ -139,6 +139,11 @@ int main(int argc, char** argv) {
     }
     std::printf("[INFO] JVM created\n");
 
+    // Force the CPU-only overlay path so this test is deterministic on every
+    // host: with the env var set the renderer mode is locked to `bare` at
+    // startup instead of waiting for a GLX context that a test never has.
+    ::setenv("WOKE_FORCE_CPU_OVERLAY", "1", 1);
+
     // ---- 2) dlopen libwoke: constructor attaches + installs hooks ----------
     void* woke = ::dlopen(lib, RTLD_NOW | RTLD_LOCAL);
     if (woke == nullptr) {
@@ -149,6 +154,7 @@ int main(int argc, char** argv) {
     using count_fn = long long (*)();
     using str_fn = const char* (*)();
     using set_fn = void (*)(int);
+    using size_fn = void (*)(int*, int*);
     using onload_fn = jint (*)(JavaVM*, void*);
     using onunload_fn = void (*)(JavaVM*, void*);
 
@@ -161,13 +167,16 @@ int main(int argc, char** argv) {
     auto f_last = reinterpret_cast<count_fn>(::dlsym(woke, "woke_hook_last_frame_ns"));
     auto f_total = reinterpret_cast<count_fn>(::dlsym(woke, "woke_hook_total_frame_ns"));
     auto f_set = reinterpret_cast<set_fn>(::dlsym(woke, "woke_hook_set_gui_open"));
+    auto f_mode = reinterpret_cast<status_fn>(::dlsym(woke, "woke_hook_backend_status"));
+    auto f_size = reinterpret_cast<size_fn>(::dlsym(woke, "woke_hook_display_size"));
+    auto f_input = reinterpret_cast<count_fn>(::dlsym(woke, "woke_hook_input_updates"));
     auto f_onload = reinterpret_cast<onload_fn>(::dlsym(woke, "JNI_OnLoad"));
     auto f_onunload = reinterpret_cast<onunload_fn>(::dlsym(woke, "JNI_OnUnload"));
 
     check(f_status && f_imgui && f_target && f_hits && f_supp && f_frames && f_last &&
-              f_total && f_set && f_onload && f_onunload,
+              f_total && f_set && f_mode && f_size && f_input && f_onload && f_onunload,
           "all exported JNI/hook symbols resolve via dlsym");
-    if (!f_status || !f_hits || !f_set || !f_onload) {
+    if (!f_status || !f_hits || !f_set || !f_mode || !f_size || !f_onload) {
         return 2;
     }
 
@@ -180,6 +189,17 @@ int main(int argc, char** argv) {
     check(f_status() == 1, "glXSwapBuffers hook is ACTIVE after load");
     check(f_imgui() == 1, "bare ImGui context initialized (ready for rendering)");
     check(std::strcmp(f_target(), "glXSwapBuffers") == 0, "hook target is glXSwapBuffers");
+
+    // ---- 3b) renderer mode + display size ----------------------------------
+    check(f_mode() == 2, "WOKE_FORCE_CPU_OVERLAY locked the renderer to bare (mode 2)");
+    {
+        int w = 0;
+        int h = 0;
+        f_size(&w, &h);
+        check(w == 1920 && h == 1080,
+              "display size defaults to 1920x1080 without a real X drawable");
+    }
+    check(f_input() == 0, "no pointer samples without a real X display");
 
     // ---- 4) detour fires and chains to the original body -------------------
     call_swap();   // GUI closed by default
@@ -195,17 +215,35 @@ int main(int argc, char** argv) {
     check(f_frames() == 1, "GUI open -> bare ImGui frame executed (NewFrame+Render)");
     check(f_supp() == 1, "suppression counter did not advance while open");
 
-    // ---- 6) draw suppression again + frame budget --------------------------
+    // ---- 6) draw suppression again + steady-state frame budget -------------
     f_set(0);
     call_swap();
     check(f_frames() == 1 && f_supp() == 2,
           "GUI closed again -> suppressed (ImGui frame count frozen)");
-    const long long hits = f_hits();
-    const long long avg_ns = (hits > 0) ? (f_total() / hits) : 0;
-    check(avg_ns >= 0 && avg_ns < 500000,
-          "per-frame overhead under 0.5 ms budget (avg < 500000 ns)");
-    std::printf("       overhead: last=%lld ns avg=%lld ns over %lld presents\n",
-                f_last(), avg_ns, hits);
+
+    // Budget: < 0.5 ms of client work per present. Measured over a batch of
+    // GUI-open presents after a warm-up so the one-time first-frame setup
+    // (draw-list shared data, atlas bookkeeping) is not amortized over three
+    // samples — the blueprint is about per-frame overhead.
+    f_set(1);
+    for (int i = 0; i < 5; ++i) {
+        call_swap();   // warm-up
+    }
+    const long long warm_hits = f_hits();
+    const long long warm_total = f_total();
+    constexpr int kBatch = 30;
+    for (int i = 0; i < kBatch; ++i) {
+        call_swap();
+    }
+    f_set(0);
+    const long long batch_hits = f_hits() - warm_hits;
+    const long long batch_avg =
+        (batch_hits > 0) ? ((f_total() - warm_total) / batch_hits) : -1;
+    check(batch_hits == kBatch, "budget batch ran the expected number of presents");
+    check(batch_avg >= 0 && batch_avg < 500000,
+          "steady-state overlay frame under 0.5 ms budget (avg < 500000 ns)");
+    std::printf("       overhead: last=%lld ns steady-state avg=%lld ns over %lld frames\n",
+                f_last(), batch_avg, batch_hits);
 
     // ---- 7) JNI_OnUnload tears the hook engine down ------------------------
     f_onunload(vm, nullptr);
@@ -223,6 +261,8 @@ int main(int argc, char** argv) {
     check(contains(log, "JVM present — deferring initialization to JNI_OnLoad"),
           "log: constructor deferred init despite JVM present");
     check(contains(log, "ImGui context created (bare frame"), "log: ImGui context created line");
+    check(contains(log, "WOKE_FORCE_CPU_OVERLAY set"), "log: forced CPU-only overlay line");
+    check(contains(log, "ImGui font atlas built headlessly:"), "log: bare atlas built line");
     check(contains(log, "present hook installed: glXSwapBuffers"), "log: present hook installed line");
     check(contains(log, "hook engine initialized: glXSwapBuffers active"),
           "log: hook engine initialized line");

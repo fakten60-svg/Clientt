@@ -2,10 +2,11 @@
 //  woke.wtf — src/hook/present_hook.cpp
 //  The glXSwapBuffers detour, bare ImGui frame, and overhead measurement.
 //
-//  No GL is touched by OUR code: the ImGui backend (imgui_impl_opengl3) is
-//  attached later inside the game; here NewFrame/Render run on pure CPU so
-//  the hook is testable headlessly. The detour always chains to the original
-//  via the MinHook trampoline.
+//  No GL is touched by OUR code: the renderer (imgui_impl_opengl3) is attached
+//  lazily by woke::hook::backend on the first frame whose GLX context is
+//  current; everywhere else NewFrame/Render run on pure CPU so the hook stays
+//  testable headlessly. The detour always chains to the original via the
+//  MinHook trampoline.
 // ============================================================================
 #include "hook/present_hook.hpp"
 
@@ -19,6 +20,7 @@
 #include "game/game_state.hpp"
 #include "gui/gui.hpp"
 #include "hook/hook_engine.hpp"
+#include "hook/imgui_backend.hpp"
 #include "modules/module.hpp"
 
 namespace woke::hook {
@@ -54,6 +56,7 @@ void swap_buffers_detour(void* dpy, unsigned long drawable) {
     gui::poll_keybind(dpy);
     modules::module_registry::instance().tick_all(game::game_state::instance());
 
+    bool drew_frame = false;
     if (gui::is_open() && g_imgui != nullptr) {
         ImGuiIO& io = ImGui::GetIO();
         const clock::time_point now = clock::now();
@@ -64,12 +67,20 @@ void swap_buffers_detour(void* dpy, unsigned long drawable) {
         }
         io.DeltaTime = dt;
 
-        ImGui::NewFrame();
-        gui::draw();                          // click-gui window + module list
-        ImGui::Render();
+        // Decides gl/bare on the first frame; false while GLX is reachable but
+        // no context is current yet — then this present stays suppressed.
+        if (backend::begin_present_frame(dpy, drawable)) {
+            ImGui::NewFrame();
+            gui::draw();                      // click-gui window + module list
+            ImGui::Render();
+            backend::end_frame();             // no-op unless the GL renderer is attached
+            drew_frame = true;
+        }
+    }
+    if (drew_frame) {
         g_imgui_frames.fetch_add(1, std::memory_order_relaxed);
     } else {
-        // Draw-call suppression: GUI closed -> zero ImGui work.
+        // Draw-call suppression: GUI closed (or frame not ready) -> zero ImGui work.
         g_suppressed.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -104,7 +115,7 @@ bool present_startup() {
         return true;
     }
 
-    // ---- 1) bare ImGui context (pure CPU, no backend) ----------------------
+    // ---- 1) ImGui context (renderer + input attach lazily, see backend) -----
     if (g_imgui == nullptr) {
         IMGUI_CHECKVERSION();
         g_imgui = ImGui::CreateContext();
@@ -114,15 +125,10 @@ bool present_startup() {
         }
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;                            // no imgui.ini side effects
-        io.DisplaySize = ImVec2(1920.0f, 1080.0f);           // placeholder until backend attaches
+        io.DisplaySize = ImVec2(1920.0f, 1080.0f);           // default until XGetGeometry reports
         io.DeltaTime = 1.0f / 60.0f;
-        unsigned char* pixels = nullptr;
-        int w = 0;
-        int h = 0;
-        io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);       // build atlas headlessly
-        io.Fonts->TexID = (ImTextureID)1;                    // placeholder until GL upload
-        WOKE_INFO("hook", "ImGui context created (bare frame, no GL backend yet; atlas %dx%d)",
-                  w, h);
+        WOKE_INFO("hook", "ImGui context created (bare frame, renderer attaches on first present)");
+        backend::prepare_at_startup();
     }
 
     // ---- 2) resolve + install the present detour ---------------------------
@@ -151,6 +157,7 @@ void present_shutdown() {
     const bool was_installed = g_installed.exchange(false, std::memory_order_acq_rel);
     g_original = nullptr;
     gui::set_open(false);
+    backend::shutdown();   // must precede DestroyContext: it needs the context alive
     if (g_imgui != nullptr) {
         ImGui::DestroyContext(g_imgui);
         g_imgui = nullptr;
