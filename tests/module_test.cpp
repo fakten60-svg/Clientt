@@ -6,8 +6,8 @@
 //       SimpleOption, Entity) onto a test classpath
 //    2. dlopen libwoke.so FIRST (constructor defers init), then create a JVM
 //       and call JNI_OnLoad -> full startup incl. module registry + config
-//    3. module registry: 5 built-ins across the Visual/Movement categories,
-//       names/categories, category counts, unknown-name probes
+//    3. module registry: 11 built-ins across the Visual/Movement/Combat
+//       categories, names/categories, category counts, unknown-name probes
 //    4. client-state layer against fixture objects wired through direct JNI:
 //       gamma read/write round-trip, sprint set/query, fps read
 //    5. Fullbright = read-modify-restore of gamma; Sprint = per-tick assert
@@ -128,6 +128,12 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_239.java",
         "tests/fixtures/src/net/minecraft/class_3966.java",
         "tests/fixtures/src/net/minecraft/class_636.java",
+        "tests/fixtures/src/net/minecraft/class_638.java",
+        "tests/fixtures/src/net/minecraft/class_1661.java",
+        "tests/fixtures/src/net/minecraft/class_1263.java",
+        "tests/fixtures/src/net/minecraft/class_1792.java",
+        "tests/fixtures/src/net/minecraft/class_1799.java",
+        "tests/fixtures/src/net/minecraft/class_1802.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {
@@ -233,8 +239,10 @@ int main(int argc, char** argv) {
         ::dlsym(woke, "woke_module_setting_choice_count"));
     auto f_cool = reinterpret_cast<float (*)()>(::dlsym(woke, "woke_game_attack_cooldown"));
     auto f_tgt_hp = reinterpret_cast<float (*)()>(::dlsym(woke, "woke_game_target_health"));
+    auto f_offhand_totem_probe = reinterpret_cast<int (*)()>(
+        ::dlsym(woke, "woke_game_offhand_totem"));
 
-    check(f_cool != nullptr && f_tgt_hp != nullptr,
+    check(f_cool != nullptr && f_tgt_hp != nullptr && f_offhand_totem_probe != nullptr,
           "combat game-state exports resolve via dlsym");
     auto f_choice_label = reinterpret_cast<const char* (*)(const char*, const char*, int)>(
         ::dlsym(woke, "woke_module_setting_choice_label"));
@@ -298,7 +306,7 @@ int main(int argc, char** argv) {
     check(f_imgui() == 1, "ImGui context created (ready for the click-gui)");
 
     // ---- 3) module registry -------------------------------------------------
-    check(f_mod_count() == 8, "module registry holds 8 built-in modules");
+    check(f_mod_count() == 11, "module registry holds 11 built-in modules");
     const char* n0 = f_mod_name(0);
     const char* n1 = f_mod_name(1);
     const char* n2 = f_mod_name(2);
@@ -307,14 +315,19 @@ int main(int argc, char** argv) {
     const char* n5 = f_mod_name(5);
     const char* n6 = f_mod_name(6);
     const char* n7 = f_mod_name(7);
-    check(n0 && n1 && n2 && n3 && n4 && n5 && n6 && n7 &&
+    const char* n8 = f_mod_name(8);
+    const char* n9 = f_mod_name(9);
+    check(n0 && n1 && n2 && n3 && n4 && n5 && n6 && n7 && n8 && n9 &&
               std::strcmp(n0, "HUD") == 0 && std::strcmp(n1, "Fullbright") == 0 &&
               std::strcmp(n2, "Zoom") == 0 && std::strcmp(n3, "Sprint") == 0 &&
               std::strcmp(n4, "Sneak") == 0 && std::strcmp(n5, "Target HUD") == 0 &&
               std::strcmp(n6, "Attack Cooldown") == 0 &&
-              std::strcmp(n7, "Auto Clicker") == 0,
+              std::strcmp(n7, "Auto Clicker") == 0 &&
+              std::strcmp(n8, "KillAura") == 0 && std::strcmp(n9, "W-Tap") == 0 &&
+              f_mod_name(10) != nullptr && std::strcmp(f_mod_name(10), "Auto Totem") == 0 &&
+              f_mod_name(11) == nullptr,
           "module names: HUD, Fullbright, Zoom, Sprint, Sneak, Target HUD, "
-          "Attack Cooldown, Auto Clicker");
+          "Attack Cooldown, Auto Clicker, KillAura, W-Tap");
     check(f_mod_cat(0) && f_mod_cat(3) && f_mod_cat(5) &&
               std::strcmp(f_mod_cat(0), "Visual") == 0 &&
               std::strcmp(f_mod_cat(3), "Movement") == 0 &&
@@ -324,9 +337,9 @@ int main(int argc, char** argv) {
               std::strcmp(f_cat_at(5), "Visual") == 0,
           "the six spec categories are exposed in display order");
     check(f_cat_count("Visual") == 3 && f_cat_count("Movement") == 2 &&
-              f_cat_count("Combat") == 3 && f_cat_count("Mace") == 0 &&
+              f_cat_count("Combat") == 6 && f_cat_count("Mace") == 0 &&
               f_cat_count("Misc") == 0 && f_cat_count("Spear") == 0,
-          "per-category module counts (Combat 3, Visual 3, Movement 2, rest 0)");
+          "per-category module counts (Combat 6, Visual 3, Movement 2, rest 0)");
     check(f_cat_enabled("Visual") == 0 && f_cat_enabled("Movement") == 0,
           "no module is enabled before any toggle (fresh config)");
     check(f_mod_enabled("DoesNotExist") == -1, "unknown module probes as -1");
@@ -433,8 +446,8 @@ int main(int argc, char** argv) {
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 2,
           "Movement page drew its 2 module cards");
     check(f_select_page("Combat") == 1, "sidebar page switch to the Combat category");
-    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 3,
-          "Combat page draws its 3 module cards");
+    check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 6,
+          "Combat page draws its 6 module cards");
     check(f_select_page("Mace") == 1, "sidebar page switch to the empty Mace category");
     check(f_gui_draw(&modules_shown, &toggles) == 1 && modules_shown == 0,
           "empty category draws no cards (0-badge section)");
@@ -547,6 +560,8 @@ int main(int argc, char** argv) {
           "combat fixture constructors + client holder found");
     jobject client_ref = env->GetStaticObjectField(cls310, fid_mgr);
     check(client_ref != nullptr, "fixture client instance reachable for combat wiring");
+    jmethodID get_attacks = nullptr;   // hoisted: section 7d3 also reads attacks
+    int attacks_before = 0;
     if (client_ref != nullptr && ctor636 != nullptr && ctor3966 != nullptr) {
         jobject manager = env->NewObject(cls636, ctor636);
         jfieldID fid_1761 = env->GetFieldID(cls310, "field_1761", "Lnet/minecraft/class_636;");
@@ -556,12 +571,11 @@ int main(int argc, char** argv) {
         if (manager != nullptr && fid_1761 != nullptr && fid_1765 != nullptr) {
             env->SetObjectField(client_ref, fid_1761, manager);
 
-            jmethodID get_attacks =
-                env->GetStaticMethodID(cls636, "attackCount", "()I");
+            get_attacks = env->GetStaticMethodID(cls636, "attackCount", "()I");
             check(get_attacks != nullptr, "fixture attack counter reachable");
-            const int attacks_before = (get_attacks != nullptr)
-                                           ? env->CallStaticIntMethod(cls636, get_attacks)
-                                           : 0;
+            attacks_before = (get_attacks != nullptr)
+                                 ? env->CallStaticIntMethod(cls636, get_attacks)
+                                 : 0;
 
             // Attack cooldown export: fixture player returns 1.0 by default.
             check(near(f_cool(), 1.0), "attack cooldown reads the fixture value (1.0)");
@@ -644,7 +658,115 @@ int main(int argc, char** argv) {
             }
             env->DeleteLocalRef(manager);
         }
-        env->DeleteLocalRef(client_ref);
+    }
+
+    // ---- 7d3) KillAura / W-Tap / Auto Totem ----------------------------------
+    // Wire the world fixture with a victim + a far entity, then drive KillAura.
+    jclass cls638 = env->FindClass("net/minecraft/class_638");
+    jclass cls1657 = env->FindClass("net/minecraft/class_1657");
+    jclass cls1661 = env->FindClass("net/minecraft/class_1661");
+    jclass cls1799 = env->FindClass("net/minecraft/class_1799");
+    jclass cls1802 = env->FindClass("net/minecraft/class_1802");
+    jmethodID ctor638 =
+        (cls638 != nullptr) ? env->GetMethodID(cls638, "<init>", "()V") : nullptr;
+    jmethodID add_entity =
+        (cls638 != nullptr)
+            ? env->GetMethodID(cls638, "addFixtureEntity", "(Lnet/minecraft/class_1297;)V")
+            : nullptr;
+    jfieldID fid_1687 = env->GetFieldID(cls310, "field_1687", "Lnet/minecraft/class_638;");
+    jfieldID fid_1724 = env->GetFieldID(cls310, "field_1724", "Lnet/minecraft/class_746;");
+    jfieldID fid_inventory =
+        (cls1657 != nullptr)
+            ? env->GetFieldID(cls1657, "field_inventory", "Lnet/minecraft/class_1661;")
+            : nullptr;
+    jfieldID fid_offhand =
+        (cls1661 != nullptr)
+            ? env->GetFieldID(cls1661, "field_offhand", "Lnet/minecraft/class_1799;")
+            : nullptr;
+    jfieldID fid_totem =
+        (cls1802 != nullptr) ? env->GetStaticFieldID(cls1802, "field_8288", "Lnet/minecraft/class_1792;")
+                             : nullptr;
+    jmethodID ctor1661 =
+        (cls1661 != nullptr) ? env->GetMethodID(cls1661, "<init>", "()V") : nullptr;
+    jmethodID ctor1799 =
+        (cls1799 != nullptr) ? env->GetMethodID(cls1799, "<init>", "(Lnet/minecraft/class_1792;)V")
+                             : nullptr;
+    check(ctor638 != nullptr && add_entity != nullptr && fid_1687 != nullptr &&
+              fid_1724 != nullptr && fid_inventory != nullptr && fid_offhand != nullptr &&
+              fid_totem != nullptr && ctor1661 != nullptr && ctor1799 != nullptr,
+          "world + inventory fixture plumbing resolved");
+    if (ctor638 != nullptr && add_entity != nullptr && fid_1687 != nullptr &&
+        fid_inventory != nullptr && fid_offhand != nullptr && fid_totem != nullptr) {
+        jobject world = env->NewObject(cls638, ctor638);
+        jobject player_obj = env->GetObjectField(client_ref, fid_1724);
+        check(world != nullptr && player_obj != nullptr, "fixture world + player reachable");
+        if (world != nullptr && player_obj != nullptr) {
+            env->SetObjectField(client_ref, fid_1687, world);
+
+            // A victim next to the player; KillAura attacks it once per window.
+            jobject victim2 = env->NewObject(cls1309, ctor1309);
+            check(victim2 != nullptr, "KillAura victim created");
+            if (victim2 != nullptr) {
+                env->CallVoidMethod(world, add_entity, victim2);
+                f_put_dbl("KillAura", "Reach", 4.0);
+                f_put_dbl("KillAura", "CPS", 1.0);
+                // W-Tap is armed before KillAura so the attack event reaches a
+                // listener; the 20 ms minimum tap window + a short sleep make
+                // the drop/re-assert cycle deterministic.
+                f_put_dbl("W-Tap", "Tap Duration", 20.0);
+                check(f_set_dbl("W-Tap", "Tap Duration") == 20.0,
+                      "Tap Duration parked at its 20 ms minimum");
+                check(f_mod_set("W-Tap", 1) == 1, "W-Tap enabled");
+                check(f_set_sprinting(1) == 1 && f_sprinting() == 1,
+                      "sprint parked on before the W-Tap cycle");
+                check(f_mod_set("KillAura", 1) == 1, "KillAura enabled");
+                f_tick();
+                check((get_attacks != nullptr)
+                          ? env->CallStaticIntMethod(cls636, get_attacks) >= attacks_before + 2
+                          : 1,
+                      "KillAura attacked the nearest entity in reach");
+                check(f_sprinting() == 0, "W-Tap dropped sprint on the automated attack");
+                ::usleep(120 * 1000);   // outlast the tap window (20 ms parked)
+                f_tick();
+                check(f_sprinting() == 1, "W-Tap re-asserts sprint after the tap window");
+
+                check(f_mod_set("KillAura", 0) == 1, "KillAura disabled again");
+                f_mod_set("W-Tap", 0);
+                env->DeleteLocalRef(victim2);
+            }
+
+            // ---- Auto Totem: offhand totem detection ---------------------------
+            jobject inventory = env->GetObjectField(player_obj, fid_inventory);
+            if (inventory != nullptr) {
+                // Empty offhand -> not a totem.
+                env->SetObjectField(inventory, fid_offhand, nullptr);
+                check(f_offhand_totem_probe() == 0, "empty offhand reports no totem");
+
+                // A totem in the offhand -> detected.
+                jobject totem_item = env->GetStaticObjectField(cls1802, fid_totem);
+                jobject totem_stack = (totem_item != nullptr && ctor1799 != nullptr)
+                                          ? env->NewObject(cls1799, ctor1799, totem_item)
+                                          : nullptr;
+                check(totem_stack != nullptr, "totem stack fixture created");
+                if (totem_stack != nullptr) {
+                    env->SetObjectField(inventory, fid_offhand, totem_stack);
+                    check(f_offhand_totem_probe() == 1,
+                          "offhand totem detected via OFF_HAND_SLOT");
+                    env->DeleteLocalRef(totem_stack);
+                }
+                env->DeleteLocalRef(totem_item);
+                env->SetObjectField(inventory, fid_offhand, nullptr);
+                env->DeleteLocalRef(inventory);
+            }
+
+            // Registered + one tick against the fixture: the offhand is empty
+            // and the screen handler is absent, so the swap path fails softly.
+            check(f_mod_set("Auto Totem", 1) == 1, "Auto Totem registered and toggleable");
+            f_tick();
+            check(f_mod_set("Auto Totem", 0) == 1, "Auto Totem disabled again");
+            env->DeleteLocalRef(world);
+        }
+        env->DeleteLocalRef(player_obj);
     }
 
     // ---- 7e) game-thread task queue ----------------------------------------
@@ -665,7 +787,7 @@ int main(int argc, char** argv) {
     const std::string log = read_all("logs/latest.log");
     check(contains(log, "no JVM present in this process — deferred to JNI_OnLoad"),
           "log: constructor deferred init");
-    check(contains(log, "registered 8 built-in modules"), "log: built-in modules registered");
+    check(contains(log, "registered 11 built-in modules"), "log: built-in modules registered");
     check(contains(log, "Fullbright enabled"), "log: Fullbright enable recorded");
     check(contains(log, "Fullbright disabled"), "log: Fullbright disable recorded");
     check(contains(log, "click-gui opened"), "log: click-gui open recorded");
