@@ -9,9 +9,10 @@
 //    Sprint     Movement  — keeps the player sprinting via Entity#setSprinting
 //    Sneak      Movement  — keeps the player sneaking via Entity#setSneaking
 //
-//  The combat, pvp and weapon sets live in builtin_combat.cpp,
-//  builtin_pvp.cpp and builtin_gear.cpp; register_builtins() chains all
-//  four registration passes (display order follows the call order).
+//  The combat, pvp, macro, weapon and overlay sets live in
+//  builtin_combat.cpp, builtin_pvp.cpp, builtin_macro.cpp, builtin_gear.cpp
+//  and builtin_visual.cpp; register_builtins() chains all six registration
+//  passes (display order follows the call order).
 //
 //  All touches to game state go through woke::game::game_state — pure
 //  client-state read/write, zero packet involvement (project scope). Each
@@ -225,7 +226,9 @@ void register_builtins() {
     registry.register_module(std::make_unique<sneak_module>());
     register_combat_builtins();
     register_pvp_builtins();
+    register_macro_builtins();
     register_gear_builtins();
+    register_visual_builtins();
     WOKE_INFO("module", "registered %zu built-in modules across %zu categories",
               registry.all().size(), kCategoryCount);
 }

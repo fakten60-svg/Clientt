@@ -6,6 +6,7 @@
 //  sprint/sneak) — zero packet generation (project scope).
 // ============================================================================
 #include <string>
+#include <vector>
 
 #include "core/config.hpp"
 #include "core/event_bus.hpp"
@@ -72,6 +73,67 @@ WOKE_API float woke_game_target_health() {
 // 1 when the player's offhand currently holds a totem of undying (Auto Totem).
 WOKE_API int woke_game_offhand_totem() {
     return woke::game::game_state::instance().offhand_totem() ? 1 : 0;
+}
+
+// ---- visual snapshots (ESP introspection; tests + diagnostics) ----------------
+
+// Number of other players in the default 64-block ESP scan; -1 when the
+// world graph is unreachable.
+WOKE_API int woke_game_esp_player_count() {
+    std::vector<woke::game::game_state::esp_player> players;
+    if (!woke::game::game_state::instance().esp_scan_players(64.0, players)) {
+        return -1;
+    }
+    return static_cast<int>(players.size());
+}
+
+// GameProfile name of the player at `index` of the same scan ("" when absent).
+WOKE_API const char* woke_game_esp_player_name(int index) {
+    static char buf[64];
+    buf[0] = '\0';
+    std::vector<woke::game::game_state::esp_player> players;
+    if (!woke::game::game_state::instance().esp_scan_players(64.0, players)) {
+        return buf;
+    }
+    if (index >= 0 && index < static_cast<int>(players.size())) {
+        for (int i = 0; i < 63 && players[static_cast<std::size_t>(index)].name[i] != '\0'; ++i) {
+            buf[i] = players[static_cast<std::size_t>(index)].name[i];
+        }
+        buf[63] = '\0';
+    }
+    return buf;
+}
+
+// Number of storage block entities in the default 48-block scan; -1 when the
+// world graph is unreachable.
+WOKE_API int woke_game_esp_storage_count() {
+    std::vector<woke::game::game_state::esp_storage> storages;
+    if (!woke::game::game_state::instance().esp_scan_block_entities(48.0, storages)) {
+        return -1;
+    }
+    return static_cast<int>(storages.size());
+}
+
+// Projects a world point through the 800x600 reference viewport. Returns 1
+// when visible (sx/sy filled), 0 when behind the camera, -1 on failure.
+WOKE_API int woke_game_esp_project(double wx, double wy, double wz, double* sx, double* sy) {
+    double ox = 0.0;
+    double oy = 0.0;
+    bool visible = false;
+    if (!woke::game::game_state::instance().project_world_to_screen(wx, wy, wz, 800.0, 600.0,
+                                                                    ox, oy, visible)) {
+        return -1;
+    }
+    if (!visible) {
+        return 0;
+    }
+    if (sx != nullptr) {
+        *sx = ox;
+    }
+    if (sy != nullptr) {
+        *sy = oy;
+    }
+    return 1;
 }
 
 // ---- hook engine / present-hook introspection -----------------------------------

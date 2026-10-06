@@ -126,6 +126,17 @@ int main(int argc, char** argv) {
         "tests/fixtures/src/net/minecraft/class_1792.java",
         "tests/fixtures/src/net/minecraft/class_1799.java",
         "tests/fixtures/src/net/minecraft/class_1802.java",
+        "tests/fixtures/src/net/minecraft/class_2382.java",
+        "tests/fixtures/src/net/minecraft/class_2338.java",
+        "tests/fixtures/src/net/minecraft/class_2586.java",
+        "tests/fixtures/src/net/minecraft/class_1684.java",
+        "tests/fixtures/src/net/minecraft/class_2595.java",
+        "tests/fixtures/src/net/minecraft/class_3719.java",
+        "tests/fixtures/src/net/minecraft/class_2627.java",
+        "tests/fixtures/src/net/minecraft/class_2614.java",
+        "tests/fixtures/src/net/minecraft/class_2609.java",
+        "tests/fixtures/src/net/minecraft/class_3722.java",
+        "tests/fixtures/src/com/mojang/authlib/GameProfile.java",
     };
     std::string jc = "mkdir -p .cache/javac-out && " + javac + " -d .cache/javac-out";
     for (const char* f : fixtures) {
@@ -205,7 +216,7 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     check(f_status() == 2, "deferred worker reached kReady (state == 2) with no JNI_OnLoad");
-    check(f_modules() == 18, "built-in modules registered by the deferred worker");
+    check(f_modules() == 25, "built-in modules registered by the deferred worker");
     check(f_mappings() >= 9000, "mappings.json parsed by the deferred worker");
     check(f_cached() >= 1, "reflection cache populated by the deferred worker");
     std::printf("       cached: %lld classes\n", f_cached());

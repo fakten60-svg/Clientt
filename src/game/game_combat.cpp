@@ -701,11 +701,11 @@ bool game_state::player_rotation(float& yaw, float& pitch) {
     return true;
 }
 
-bool game_state::aim_angle_to(jobject target, double max_step_deg, double gain, bool apply,
-                              double& delta_deg) {
+bool game_state::aim_at_point(double tx, double ty, double tz, double max_step_deg,
+                              double gain, bool apply, double& delta_deg) {
     delta_deg = 0.0;
     JNIEnv* env = this->env();
-    if (env == nullptr || target == nullptr || max_step_deg <= 0.0) {
+    if (env == nullptr || max_step_deg <= 0.0) {
         return false;
     }
     auto& cache = jni::reflection_cache::instance();
@@ -730,12 +730,6 @@ bool game_state::aim_angle_to(jobject target, double max_step_deg, double gain, 
     const double pz = env->CallDoubleMethod(player, get_z);
     clear_exception(env);
     const double eye_y = env->CallDoubleMethod(player, get_eye_y);
-    clear_exception(env);
-    const double tx = env->CallDoubleMethod(target, get_x);
-    clear_exception(env);
-    const double ty = env->CallDoubleMethod(target, get_y) + 1.0;   // chest height
-    clear_exception(env);
-    const double tz = env->CallDoubleMethod(target, get_z);
     clear_exception(env);
     const float cur_yaw_f = env->CallFloatMethod(player, get_yaw);
     clear_exception(env);
@@ -776,6 +770,73 @@ bool game_state::aim_angle_to(jobject target, double max_step_deg, double gain, 
     env->CallVoidMethod(player, set_pitch, cur_pitch + step_pitch);
     clear_exception(env);
     return true;
+}
+
+// Entity-position reader shared by the two aim wrappers below.
+namespace {
+
+bool entity_origin(JNIEnv* env, jni::reflection_cache& cache, jobject target, double& ox,
+                   double& oy, double& oz) {
+    const jmethodID get_x = cache.find_method("net/minecraft/entity/Entity", "getX", nullptr);
+    const jmethodID get_y = cache.find_method("net/minecraft/entity/Entity", "getY", nullptr);
+    const jmethodID get_z = cache.find_method("net/minecraft/entity/Entity", "getZ", nullptr);
+    if (env == nullptr || target == nullptr || get_x == nullptr || get_y == nullptr ||
+        get_z == nullptr) {
+        return false;
+    }
+    ox = env->CallDoubleMethod(target, get_x);
+    env->ExceptionClear();
+    oy = env->CallDoubleMethod(target, get_y);
+    env->ExceptionClear();
+    oz = env->CallDoubleMethod(target, get_z);
+    env->ExceptionClear();
+    return true;
+}
+
+} // namespace
+
+bool game_state::aim_angle_to(jobject target, double max_step_deg, double gain, bool apply,
+                              double& delta_deg) {
+    delta_deg = 0.0;
+    if (target == nullptr || max_step_deg <= 0.0) {
+        return false;
+    }
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    if (!entity_origin(env, jni::reflection_cache::instance(), target, tx, ty, tz)) {
+        return false;
+    }
+    return aim_at_point(tx, ty + 1.0, tz, max_step_deg, gain, apply, delta_deg);   // chest height
+}
+
+bool game_state::aim_at_entity(jobject target, double max_step_deg, double gain, bool apply,
+                               double& delta_deg) {
+    delta_deg = 0.0;
+    if (target == nullptr || max_step_deg <= 0.0) {
+        return false;
+    }
+    JNIEnv* env = this->env();
+    if (env == nullptr) {
+        return false;
+    }
+    double tx = 0.0;
+    double ty = 0.0;
+    double tz = 0.0;
+    if (!entity_origin(env, jni::reflection_cache::instance(), target, tx, ty, tz)) {
+        return false;
+    }
+    // Projectile interception aims at the entity origin, not its chest.
+    return aim_at_point(tx, ty, tz, max_step_deg, gain, apply, delta_deg);
+}
+
+bool game_state::nearest_entity_of_class(float max_distance, const char* yarn_class,
+                                         combat_target_info& out) {
+    return scan_nearest_entity(max_distance, yarn_class, out, nullptr, 0);
 }
 
 double game_state::player_fall_distance() {

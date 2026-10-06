@@ -4,10 +4,14 @@ package net.minecraft;
  * Test fixture — intermediary name for Yarn net/minecraft/entity/player/PlayerEntity.
  *   method_7261 (F)F            = getAttackCooldownProgress(float baseTime)
  *   method_31548 ()L…/class_1661; = getInventory()
+ *   method_7334 ()Lcom/mojang/authlib/GameProfile; = getGameProfile()
  */
 public class class_1657 extends class_1309 {
     /** Fixture-only cooldown value in [0,1] (not a mapped member). */
     public float field_cooldown = 1.0f;
+
+    /** Fixture-only display name (not a mapped member); getGameProfile serves it. */
+    public String field_name = "Steve";
 
     /** Fixture-only inventory holder (not a mapped member). */
     public class_1661 field_inventory = new class_1661();
@@ -18,5 +22,9 @@ public class class_1657 extends class_1309 {
 
     public class_1661 method_31548() {
         return field_inventory;
+    }
+
+    public com.mojang.authlib.GameProfile method_7334() {
+        return new com.mojang.authlib.GameProfile(new java.util.UUID(0L, 0L), field_name);
     }
 }
