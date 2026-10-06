@@ -219,6 +219,7 @@ void register_builtins() {
     registry.register_module(std::make_unique<zoom_module>());
     registry.register_module(std::make_unique<sprint_module>());
     registry.register_module(std::make_unique<sneak_module>());
+    register_combat_builtins();
     WOKE_INFO("module", "registered %zu built-in modules across %zu categories",
               registry.all().size(), kCategoryCount);
 }

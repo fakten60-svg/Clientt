@@ -6,10 +6,15 @@ package net.minecraft;
  *   method_5624 ()Z  = isSprinting()
  *   method_5660 (Z)V = setSneaking(boolean)
  *   method_5715 ()Z  = isSneaking()
+ *   method_5864 ()L…/class_1299; = getType()
+ *   method_5805 ()Z  = isAlive()
  */
 public class class_1297 {
     private boolean field_sprinting = false;
     private boolean field_sneaking = false;
+
+    /** Fixture-only type holder (the real Entity returns a registered type). */
+    public class_1299 field_type = new class_1299("entity.fixtures.dummy");
 
     public void method_5728(boolean sprinting) {
         field_sprinting = sprinting;
@@ -25,5 +30,13 @@ public class class_1297 {
 
     public boolean method_5715() {
         return field_sneaking;
+    }
+
+    public boolean method_5805() {
+        return true;   // isAlive()
+    }
+
+    public class_1299 method_5864() {
+        return field_type;
     }
 }

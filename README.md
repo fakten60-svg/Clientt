@@ -63,7 +63,10 @@ Six categories are always present in the sidebar (`Combat`, `Mace`, `Misc`,
 
 | Module | Category | Behavior |
 |---|---|---|
-| HUD | Visual | Draws a watermark (optionally with live FPS) in a configurable corner |
+| Target HUD | Combat | Render-only panel for the entity under the crosshair (type + health bar) from the client's own raycast |
+| Attack Cooldown | Combat | Render-only vanilla attack-charge indicator near the crosshair |
+| Auto Clicker | Combat | Repeats the vanilla attack (`interactionManager.attackEntity` + `swingHand`) on the crosshair target at a set CPS; optional "Require Full Charge" respects the vanilla cooldown |
+| HUD | Visual | Draws a watermark (optionally with live FPS) in a configurable corner (mode dropdown) |
 | Fullbright | Visual | Read-modify-restore of the `gamma` video setting |
 | Zoom | Visual | Read-modify-restore of the `fov` video setting (`Integer`-boxed `SimpleOption`) |
 | Sprint | Movement | Per-tick `Entity#setSprinting(true)` assert while enabled |
@@ -191,8 +194,9 @@ src/core/event_bus.hpp       decoupled per-type event channels (module_toggled, 
 src/core/task_queue.*        bounded ring of callables drained on the game thread
 src/jni/                     mappings.json parser + jclass/jmethodID/jfieldID cache
 src/game/game_state.*        client-state layer (client/player/options, fps, gamma, fov, sprint/sneak)
+src/game/game_combat.cpp     combat accessors: crosshair target, attack cooldown, vanilla attack path
 src/modules/module.*         BaseModule lifecycle + registry + categories
-src/modules/builtin.*        built-ins: HUD, Fullbright, Zoom, Sprint, Sneak
+src/modules/builtin.*        built-ins: Target HUD, Attack Cooldown, Auto Clicker, HUD, Fullbright, Zoom, Sprint, Sneak
 src/ui/theme.*               macOS palette + geometry + ImGui style
 src/ui/animation.*           AnimationController (spring_value, animated_value, easing curves)
 src/ui/component.*           reusable ImGui widgets (traffic light, toggle, search field, ...)
@@ -245,6 +249,9 @@ so the result does not depend on the host's GL stack. `module_test` additionally
 exercises the new API surface: category counts, FOV/sneak round-trips, `BaseSetting`
 persistence and reset, per-module keybinds, dashboard pages/search/grid/expand,
 toasts, the animation controller, event-bus listener counts and the task queue.
+It also drives the combat set against fixture entities: crosshair-target health
+reads, the one-attack-per-rate-window Auto Clicker behavior, the self-attack
+guard and the ignore path for non-entity crosshair targets.
 
 The GL renderer branch (`gl` mode) is only exercised against a real GLX context
 and is not covered by the headless suites.

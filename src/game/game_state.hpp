@@ -60,6 +60,32 @@ public:
     bool is_sneaking();                   // Entity.isSneaking() on the player
     bool set_sneaking(bool on);           // Entity.setSneaking() — movement state
 
+    // ---- combat (client-state read + vanilla client attack path) ------------
+
+    // Snapshot of the entity under the crosshair. Reads the client's own
+    // raycast result (MinecraftClient.crosshairTarget) — no targeting scan of
+    // our own, no aim assist, no packet involvement. `name_buf` receives the
+    // entity TYPE id (EntityType.getUntranslatedName) and is served from an
+    // identity cache: the JNI string is only read when the target changes, so
+    // the per-frame path stays allocation-free.
+    struct combat_target_info {
+        bool entity = false;    // crosshair is on an entity
+        bool living = false;    // the entity is a LivingEntity (health readable)
+        bool alive = false;     // Entity.isAlive()
+        float health = 0.0f;    // LivingEntity.getHealth() (0 when !living)
+        float max_health = 0.0f;
+    };
+    bool combat_target(combat_target_info& out, char* name_buf, std::size_t cap);
+
+    // PlayerEntity.getAttackCooldownProgress(0) in [0,1]; -1.0 when absent.
+    float attack_cooldown_progress();
+
+    // Performs the vanilla client attack on the entity under the crosshair:
+    // ClientPlayerInteractionManager.attackEntity(player, target) + the swing
+    // hand animation — exactly the calls a mouse click performs. Refuses to
+    // attack the local player. false when there is no entity target.
+    bool client_attack();
+
 private:
     game_state() = default;
 
@@ -68,10 +94,19 @@ private:
     bool ensure_int_bridge(JNIEnv* env);      // java/lang/Integer valueOf/intValue
     jobject options_object(JNIEnv* env);
     jobject player_object(JNIEnv* env);
+    jobject crosshair_target_object(JNIEnv* env);
+    jobject interaction_manager_object(JNIEnv* env);
     void release_bridge(JNIEnv* env);
 
     mutable std::mutex mutex_;
     JavaVM* vm_ = nullptr;
+
+    // Combat identity cache (render/tick thread only; released on disarm).
+    // Holds a global ref of the last crosshair target so the name string is
+    // only re-read when the target object actually changes.
+    jobject combat_last_target_ = nullptr;
+    char combat_last_name_[64] = "";
+    bool combat_name_valid_ = false;
 
     // java/lang/Double bridge (global ref + method IDs), lazily built.
     jclass double_cls_ = nullptr;

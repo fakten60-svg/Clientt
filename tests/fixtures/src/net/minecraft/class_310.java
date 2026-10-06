@@ -9,6 +9,8 @@ package net.minecraft;
  *   method_1551 ()L…/class_310; = getInstance()  [static]
  *   field_1690 L…/class_315; = options (GameOptions)
  *   method_47599 ()I         = getCurrentFps()
+ *   field_1765 L…/class_239; = crosshairTarget (null = aiming at nothing)
+ *   field_1761 L…/class_636; = interactionManager (null = not in a world)
  * Compiled into .cache/javac-out and placed on the fixture JVM classpath so
  * FindClass/GetMethodID/GetFieldID resolve against real (non-null) IDs.
  */
@@ -18,6 +20,8 @@ public class class_310 {
 
     public class_746 field_1724;
     public class_315 field_1690;
+    public class_239 field_1765 = null;
+    public class_636 field_1761 = null;
 
     public class_310() {
         field_1724 = new class_746();
