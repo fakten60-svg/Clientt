@@ -15,6 +15,7 @@
 #include "core/config.hpp"
 #include "core/logger.hpp"
 #include "game/game_state.hpp"
+#include "hook/imgui_backend.hpp"
 #include "hook/present_hook.hpp"
 #include "modules/module.hpp"
 
@@ -131,6 +132,9 @@ draw_stats draw() {
 draw_stats render_frame() {
     if (ImGui::GetCurrentContext() == nullptr) {
         return {};
+    }
+    if (!woke::hook::backend::begin_headless_frame()) {
+        return {};   // client renders through GL — no headless frame for this context
     }
     ImGuiIO& io = ImGui::GetIO();
     if (io.DeltaTime <= 0.0f) {

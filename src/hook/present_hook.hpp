@@ -3,9 +3,9 @@
 //  glXSwapBuffers present hook + bare ImGui frame + draw-suppression metrics.
 //
 //  Startup resolves glXSwapBuffers from the process (the game's libGL, or a
-//  test binary that exports it), installs a MinHook detour, and creates a
-//  headless ImGui context (pure CPU — no GL/GLFW backend yet; those attach
-//  later, inside the real game process).
+//  test binary that exports it), installs a MinHook detour, and creates an
+//  ImGui context. The OpenGL3 renderer + X11 input attach lazily on the first
+//  drawn frame (src/hook/imgui_backend.*), so headless runs stay pure CPU.
 //
 //  Per-frame measurement: the detour timestamps its own work BEFORE chaining
 //  to the original swap — that delta is the client's rendering overhead
